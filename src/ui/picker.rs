@@ -148,7 +148,7 @@ impl FilePicker {
                 "{}",
                 SetForegroundColor(self.color(Color::DarkGrey))
             )?;
-            write!(stdout, "{}", "no matches")?;
+            write!(stdout, "no matches")?;
             write!(stdout, "{}", ResetColor)?;
             stdout.flush()?;
             return Ok(());

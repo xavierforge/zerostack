@@ -176,19 +176,19 @@ pub async fn run_interactive(
                             break;
                         }
                     }
-                    MouseEventKind::Down(btn) if btn == MouseButton::Left => {
+                    MouseEventKind::Down(MouseButton::Left) => {
                         let _ = user_tx_clone.blocking_send(UserEvent::MouseDown {
                             row: m.row,
                             col: m.column,
                         });
                     }
-                    MouseEventKind::Drag(btn) if btn == MouseButton::Left => {
+                    MouseEventKind::Drag(MouseButton::Left) => {
                         let _ = user_tx_clone.blocking_send(UserEvent::MouseDrag {
                             row: m.row,
                             col: m.column,
                         });
                     }
-                    MouseEventKind::Up(btn) if btn == MouseButton::Left => {
+                    MouseEventKind::Up(MouseButton::Left) => {
                         let _ = user_tx_clone.blocking_send(UserEvent::MouseUp {
                             row: m.row,
                             col: m.column,
