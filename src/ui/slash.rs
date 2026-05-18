@@ -303,7 +303,7 @@ pub async fn handle_slash(
                 }
             }
         }
-        "/reasoning" => {
+        "/reasoning" | "/thinking" => {
             *reasoning_enabled = !*reasoning_enabled;
             *show_reasoning = *reasoning_enabled;
             let model = client.completion_model(session.model.to_string());
@@ -805,7 +805,11 @@ pub async fn handle_slash(
             )?;
             renderer.write_line("  /sessions delete <id>  delete a session", C_RESULT)?;
             renderer.write_line(
-                "  /reasoning             toggle reasoning visibility",
+                "  /reasoning             toggle LLM reasoning ability",
+                C_RESULT,
+            )?;
+            renderer.write_line(
+                "  /thinking              alias for /reasoning",
                 C_RESULT,
             )?;
             renderer.write_line(
