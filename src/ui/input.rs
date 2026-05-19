@@ -163,6 +163,56 @@ impl InputEditor {
         }
     }
 
+    fn open_in_editor(&mut self) {
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "nano".to_string());
+
+        let tmp = std::env::temp_dir().join(format!("zerostack-{}.md", std::process::id()));
+
+        let _ = std::fs::write(&tmp, self.buffer.as_bytes());
+
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = crossterm::ExecutableCommand::execute(
+            &mut stdout,
+            crossterm::event::DisableMouseCapture,
+        );
+        let _ = crossterm::ExecutableCommand::execute(
+            &mut stdout,
+            crossterm::terminal::LeaveAlternateScreen,
+        );
+        let _ = stdout.flush();
+
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} \"$1\"", editor))
+            .arg("sh")
+            .arg(&tmp)
+            .status();
+
+        let _ = crossterm::ExecutableCommand::execute(
+            &mut stdout,
+            crossterm::terminal::EnterAlternateScreen,
+        );
+        let _ = crossterm::ExecutableCommand::execute(
+            &mut stdout,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        );
+        let _ = crossterm::ExecutableCommand::execute(
+            &mut stdout,
+            crossterm::event::EnableMouseCapture,
+        );
+        let _ = crossterm::terminal::enable_raw_mode();
+
+        if let Ok(content) = std::fs::read_to_string(&tmp) {
+            self.buffer = CompactString::new(content.trim_end().to_string());
+            self.cursor = self.buffer.len();
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<CompactString> {
         match key.code {
             KeyCode::Enter
@@ -196,6 +246,15 @@ impl InputEditor {
                     self.cursor = prev_char_boundary(&self.buffer, self.cursor);
                     self.buffer.remove(self.cursor);
                 }
+                None
+            }
+            KeyCode::Char(c)
+                if c == 'g' && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if self.picker.as_ref().is_some_and(|p| p.active()) {
+                    return None;
+                }
+                self.open_in_editor();
                 None
             }
             KeyCode::Char(c) => {
