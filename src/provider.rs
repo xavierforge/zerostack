@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rig::agent::Agent;
 use rig::client::CompletionClient;
 use rig::completion::{CompletionModel, Message};
@@ -10,7 +12,7 @@ use crate::agent::builder;
 use crate::agent::prompt;
 use crate::agent::runner::{self, AgentRunner};
 use crate::cli::Cli;
-use crate::config::{Config, CustomProviderConfig};
+use crate::config::{ApiStyle, Config, CustomProviderConfig};
 use crate::context::ContextFiles;
 #[cfg(feature = "mcp")]
 use crate::extras::mcp::McpClientManager;
@@ -137,13 +139,48 @@ fn resolve_api_key(
     )
 }
 
+/// rig 0.37 exposes two distinct OpenAI client types:
+/// - `openai::Client`            -> Responses API (`/responses`). Real OpenAI,
+///   including GPT-5; rig maps `max_tokens` to `max_output_tokens`, so it does
+///   not hit the GPT-5 400.
+/// - `openai::CompletionsClient` -> Chat Completions API (`/chat/completions`).
+///   Most OpenAI-compatible gateways (vLLM / LiteLLM / self-hosted) implement
+///   only this endpoint.
+///
+/// The two cannot share a single type, so we wrap them in an inner enum and let
+/// `ApiStyle` decide which one to build.
+pub enum OpenAiClient {
+    Responses(openai::Client),
+    Completions(openai::CompletionsClient),
+}
+
+impl OpenAiClient {
+    fn completion_model(&self, name: String) -> OpenAiModel {
+        match self {
+            OpenAiClient::Responses(c) => OpenAiModel::Responses(c.completion_model(name)),
+            OpenAiClient::Completions(c) => OpenAiModel::Completions(c.completion_model(name)),
+        }
+    }
+}
+
+pub enum OpenAiModel {
+    Responses(openai::responses_api::ResponsesCompletionModel),
+    Completions(openai::completion::CompletionModel),
+}
+
+#[derive(Clone)]
+pub enum OpenAiAgent {
+    Responses(Agent<openai::responses_api::ResponsesCompletionModel>),
+    Completions(Agent<openai::completion::CompletionModel>),
+}
+
 pub enum AnyClient {
     OpenRouter(openrouter::Client),
-    OpenAI(openai::CompletionsClient),
+    OpenAI(OpenAiClient),
     Anthropic(anthropic::Client),
     Gemini(gemini::Client),
     Ollama(ollama::Client),
-    Custom(openai::CompletionsClient),
+    Custom(OpenAiClient),
 }
 
 impl AnyClient {
@@ -189,11 +226,17 @@ impl AnyClient {
 async fn summarize_with_model(model: AnyModel, prompt: String) -> anyhow::Result<String> {
     match model {
         AnyModel::OpenRouter(m) => run_summarizer(m, prompt).await,
-        AnyModel::OpenAI(m) => run_summarizer(m, prompt).await,
+        AnyModel::OpenAI(m) => match m {
+            OpenAiModel::Responses(m) => run_summarizer(m, prompt).await,
+            OpenAiModel::Completions(m) => run_summarizer(m, prompt).await,
+        },
         AnyModel::Anthropic(m) => run_summarizer(m, prompt).await,
         AnyModel::Gemini(m) => run_summarizer(m, prompt).await,
         AnyModel::Ollama(m) => run_summarizer(m, prompt).await,
-        AnyModel::Custom(m) => run_summarizer(m, prompt).await,
+        AnyModel::Custom(m) => match m {
+            OpenAiModel::Responses(m) => run_summarizer(m, prompt).await,
+            OpenAiModel::Completions(m) => run_summarizer(m, prompt).await,
+        },
     }
 }
 
@@ -249,43 +292,170 @@ fn serialize_conversation(messages: &[SessionMessage]) -> String {
 
 pub enum AnyModel {
     OpenRouter(openrouter::completion::CompletionModel),
-    OpenAI(openai::completion::CompletionModel),
+    OpenAI(OpenAiModel),
     Anthropic(anthropic::completion::CompletionModel),
     Gemini(gemini::completion::CompletionModel),
     Ollama(ollama::CompletionModel),
-    Custom(openai::completion::CompletionModel),
+    Custom(OpenAiModel),
 }
 
 #[derive(Clone)]
 pub enum AnyAgent {
     OpenRouter(Agent<openrouter::completion::CompletionModel>),
-    OpenAI(Agent<openai::completion::CompletionModel>),
+    OpenAI(OpenAiAgent),
     Anthropic(Agent<anthropic::completion::CompletionModel>),
     Gemini(Agent<gemini::completion::CompletionModel>),
     Ollama(Agent<ollama::CompletionModel>),
-    Custom(Agent<openai::completion::CompletionModel>),
+    Custom(OpenAiAgent),
 }
 
 impl AnyAgent {
     pub async fn run_print(&self, prompt: &str, max_turns: usize) -> anyhow::Result<String> {
         match self {
             AnyAgent::OpenRouter(a) => runner::run_print(a, prompt, max_turns).await,
-            AnyAgent::OpenAI(a) => runner::run_print(a, prompt, max_turns).await,
+            AnyAgent::OpenAI(a) => match a {
+                OpenAiAgent::Responses(a) => runner::run_print(a, prompt, max_turns).await,
+                OpenAiAgent::Completions(a) => runner::run_print(a, prompt, max_turns).await,
+            },
             AnyAgent::Anthropic(a) => runner::run_print(a, prompt, max_turns).await,
             AnyAgent::Gemini(a) => runner::run_print(a, prompt, max_turns).await,
             AnyAgent::Ollama(a) => runner::run_print(a, prompt, max_turns).await,
-            AnyAgent::Custom(a) => runner::run_print(a, prompt, max_turns).await,
+            AnyAgent::Custom(a) => match a {
+                OpenAiAgent::Responses(a) => runner::run_print(a, prompt, max_turns).await,
+                OpenAiAgent::Completions(a) => runner::run_print(a, prompt, max_turns).await,
+            },
         }
     }
 
     pub fn spawn_runner(self, prompt: String, history: Vec<Message>) -> AgentRunner {
         match self {
             AnyAgent::OpenRouter(a) => runner::spawn_agent(a, prompt, history),
-            AnyAgent::OpenAI(a) => runner::spawn_agent(a, prompt, history),
+            AnyAgent::OpenAI(a) => match a {
+                OpenAiAgent::Responses(a) => runner::spawn_agent(a, prompt, history),
+                OpenAiAgent::Completions(a) => runner::spawn_agent(a, prompt, history),
+            },
             AnyAgent::Anthropic(a) => runner::spawn_agent(a, prompt, history),
             AnyAgent::Gemini(a) => runner::spawn_agent(a, prompt, history),
             AnyAgent::Ollama(a) => runner::spawn_agent(a, prompt, history),
-            AnyAgent::Custom(a) => runner::spawn_agent(a, prompt, history),
+            AnyAgent::Custom(a) => match a {
+                OpenAiAgent::Responses(a) => runner::spawn_agent(a, prompt, history),
+                OpenAiAgent::Completions(a) => runner::spawn_agent(a, prompt, history),
+            },
+        }
+    }
+}
+
+/// Expands a value that is exactly "${VAR}" to the environment variable's value;
+/// any other format is returned as-is. Only whole-string `${VAR}` is supported
+/// (the common, safe case) rather than arbitrary interpolation.
+fn expand_env(value: &str) -> anyhow::Result<String> {
+    if let Some(var) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+        std::env::var(var).map_err(|_| {
+            anyhow::anyhow!(
+                "Environment variable '{var}' (referenced in a custom provider header) is not set"
+            )
+        })
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// Builds a shared reqwest client, combining:
+/// - `danger_accept_invalid_certs` (from #62; the TLS toggle shared by all providers)
+/// - a custom provider's `headers` (values support `${ENV_VAR}` expansion) and `timeout_secs`
+///
+/// When the provider is not custom (`custom == None`) and TLS is not disabled,
+/// the resulting client is equivalent to `reqwest::Client::default()`, so the
+/// behavior of existing providers is unchanged.
+fn build_http_client(
+    provider_name: &str,
+    danger_accept_invalid_certs: bool,
+    custom: Option<&CustomProviderConfig>,
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+
+    if let Some(cfg) = custom {
+        if !cfg.headers.is_empty() {
+            let mut headers = HeaderMap::new();
+            for (name, raw_value) in &cfg.headers {
+                let value = expand_env(raw_value)?;
+                let header_name = HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("Invalid header name '{name}': {e}"))?;
+                let header_value = HeaderValue::from_str(&value)
+                    .map_err(|e| anyhow::anyhow!("Invalid value for header '{name}': {e}"))?;
+                headers.insert(header_name, header_value);
+            }
+            builder = builder.default_headers(headers);
+        }
+        if let Some(secs) = cfg.timeout_secs {
+            builder = builder.timeout(Duration::from_secs(secs));
+        }
+    }
+
+    if danger_accept_invalid_certs {
+        tracing::warn!(
+            "TLS certificate verification DISABLED for provider '{}' \
+             (danger_accept_invalid_certs = true). Connections are vulnerable to MITM.",
+            provider_name
+        );
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+
+    builder.build().map_err(Into::into)
+}
+
+/// Determines which API style the OpenAI family should use:
+/// if `api_style` is set explicitly, honor it; otherwise default to Completions
+/// when a base_url is present (i.e. a compatible gateway) and Responses when it
+/// is absent (i.e. real api.openai.com).
+fn resolve_api_style(base_url: Option<&str>, custom: Option<&CustomProviderConfig>) -> ApiStyle {
+    custom.and_then(|c| c.api_style).unwrap_or({
+        if base_url.is_some() {
+            ApiStyle::Completions
+        } else {
+            ApiStyle::Responses
+        }
+    })
+}
+
+/// Builds an OpenAI-family client (Responses or Completions) using the
+/// already-constructed shared http_client.
+fn build_openai_client(
+    key: &str,
+    base_url: Option<&str>,
+    custom: Option<&CustomProviderConfig>,
+    http_client: reqwest::Client,
+) -> anyhow::Result<OpenAiClient> {
+    let style = resolve_api_style(base_url, custom);
+
+    match style {
+        ApiStyle::Responses => {
+            let client = match base_url {
+                Some(u) => openai::Client::builder()
+                    .api_key(key)
+                    .base_url(u)
+                    .http_client(http_client)
+                    .build()?,
+                None => openai::Client::builder()
+                    .api_key(key)
+                    .http_client(http_client)
+                    .build()?,
+            };
+            Ok(OpenAiClient::Responses(client))
+        }
+        ApiStyle::Completions => {
+            let client = match base_url {
+                Some(u) => openai::CompletionsClient::builder()
+                    .api_key(key)
+                    .base_url(u)
+                    .http_client(http_client)
+                    .build()?,
+                None => openai::CompletionsClient::builder()
+                    .api_key(key)
+                    .http_client(http_client)
+                    .build()?,
+            };
+            Ok(OpenAiClient::Completions(client))
         }
     }
 }
@@ -303,7 +473,12 @@ pub fn create_client(
         )
     })?;
 
-    let key = resolve_api_key(info.kind, info.api_key_env.as_deref(), api_key, config_api_keys)?;
+    let key = resolve_api_key(
+        info.kind,
+        info.api_key_env.as_deref(),
+        api_key,
+        config_api_keys,
+    )?;
 
     let base_url = info.base_url.or_else(|| {
         if info.kind == ProviderKind::Custom {
@@ -313,33 +488,25 @@ pub fn create_client(
         }
     });
 
-    let http_client = if info.danger_accept_invalid_certs {
-        tracing::warn!(
-            "TLS certificate verification DISABLED for provider '{}' \
-             (danger_accept_invalid_certs = true). Connections are vulnerable to MITM.",
-            provider_name
-        );
-        reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()?
-    } else {
-        reqwest::Client::default()
-    };
+    // If this provider is an entry in custom_providers, pull its config for api_style / headers / timeout.
+    let custom_cfg = custom_providers.get(provider_name);
+
+    // Shared http_client: combines #62's TLS toggle with this PR's headers / timeout.
+    // Only one match arm runs, so it can be moved directly (no clone needed).
+    let http_client =
+        build_http_client(provider_name, info.danger_accept_invalid_certs, custom_cfg)?;
 
     match info.kind {
-        ProviderKind::OpenAI => {
-            let mut b = openai::CompletionsClient::builder()
-                .api_key(&key)
-                .http_client(http_client.clone());
-            if let Some(base_url) = &base_url {
-                b = b.base_url(base_url);
-            }
-            Ok(AnyClient::OpenAI(b.build()?))
-        }
+        ProviderKind::OpenAI => Ok(AnyClient::OpenAI(build_openai_client(
+            &key,
+            base_url.as_deref(),
+            custom_cfg,
+            http_client,
+        )?)),
         ProviderKind::Anthropic => {
             let mut b = anthropic::Client::builder()
                 .api_key(&key)
-                .http_client(http_client.clone());
+                .http_client(http_client);
             if let Some(base_url) = &base_url {
                 b = b.base_url(base_url);
             }
@@ -348,7 +515,7 @@ pub fn create_client(
         ProviderKind::Gemini => {
             let mut b = gemini::Client::builder()
                 .api_key(&key)
-                .http_client(http_client.clone());
+                .http_client(http_client);
             if let Some(base_url) = &base_url {
                 b = b.base_url(base_url);
             }
@@ -358,7 +525,7 @@ pub fn create_client(
             let key: ollama::OllamaApiKey = key.as_str().into();
             let mut b = ollama::Client::builder()
                 .api_key(key)
-                .http_client(http_client.clone());
+                .http_client(http_client);
             if let Some(base_url) = &base_url {
                 b = b.base_url(base_url);
             }
@@ -367,7 +534,7 @@ pub fn create_client(
         ProviderKind::OpenRouter => {
             let mut b = openrouter::Client::builder()
                 .api_key(&key)
-                .http_client(http_client.clone());
+                .http_client(http_client);
             if let Some(base_url) = &base_url {
                 b = b.base_url(base_url);
             }
@@ -379,12 +546,60 @@ pub fn create_client(
                     "CUSTOM_BASE_URL environment variable must be set for custom provider"
                 )
             })?;
-            let b = openai::CompletionsClient::builder()
-                .api_key(&key)
-                .http_client(http_client)
-                .base_url(&base_url);
-            Ok(AnyClient::Custom(b.build()?))
+            Ok(AnyClient::Custom(build_openai_client(
+                &key,
+                Some(&base_url),
+                custom_cfg,
+                http_client,
+            )?))
         }
+    }
+}
+
+/// Builds an OpenAiModel (Responses / Completions) into the matching OpenAiAgent.
+#[allow(clippy::too_many_arguments)]
+async fn build_openai_agent(
+    model: OpenAiModel,
+    cli: &Cli,
+    cfg: &Config,
+    context: &ContextFiles,
+    permission: Option<PermCheck>,
+    ask_tx: Option<AskSender>,
+    sandbox: Sandbox,
+    reasoning_enabled: bool,
+    #[cfg(feature = "mcp")] mcp_manager: Option<&McpClientManager>,
+) -> OpenAiAgent {
+    match model {
+        OpenAiModel::Responses(m) => OpenAiAgent::Responses(
+            builder::build_agent_inner(
+                m,
+                cli,
+                cfg,
+                context,
+                permission,
+                ask_tx,
+                sandbox,
+                reasoning_enabled,
+                #[cfg(feature = "mcp")]
+                mcp_manager,
+            )
+            .await,
+        ),
+        OpenAiModel::Completions(m) => OpenAiAgent::Completions(
+            builder::build_agent_inner(
+                m,
+                cli,
+                cfg,
+                context,
+                permission,
+                ask_tx,
+                sandbox,
+                reasoning_enabled,
+                #[cfg(feature = "mcp")]
+                mcp_manager,
+            )
+            .await,
+        ),
     }
 }
 
@@ -417,7 +632,7 @@ pub async fn build_agent(
             .await,
         ),
         AnyModel::OpenAI(m) => AnyAgent::OpenAI(
-            builder::build_agent_inner(
+            build_openai_agent(
                 m,
                 cli,
                 cfg,
@@ -469,21 +684,6 @@ pub async fn build_agent(
                 context,
                 permission,
                 ask_tx,
-                sandbox,
-                reasoning_enabled,
-                #[cfg(feature = "mcp")]
-                mcp_manager,
-            )
-            .await,
-        ),
-        AnyModel::Custom(m) => AnyAgent::Custom(
-            builder::build_agent_inner(
-                m,
-                cli,
-                cfg,
-                context,
-                permission,
-                ask_tx,
                 sandbox.clone(),
                 reasoning_enabled,
                 #[cfg(feature = "mcp")]
@@ -491,5 +691,84 @@ pub async fn build_agent(
             )
             .await,
         ),
+        AnyModel::Custom(m) => AnyAgent::Custom(
+            build_openai_agent(
+                m,
+                cli,
+                cfg,
+                context,
+                permission,
+                ask_tx,
+                sandbox,
+                reasoning_enabled,
+                #[cfg(feature = "mcp")]
+                mcp_manager,
+            )
+            .await,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ApiStyle, CustomProviderConfig};
+
+    fn cfg(api_style: Option<ApiStyle>) -> CustomProviderConfig {
+        CustomProviderConfig {
+            provider_type: "openai".to_string(),
+            base_url: "https://gw.example/v1".to_string(),
+            api_key_env: None,
+            danger_accept_invalid_certs: None,
+            api_style,
+            headers: std::collections::HashMap::new(),
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn defaults_to_responses_without_base_url() {
+        assert_eq!(resolve_api_style(None, None), ApiStyle::Responses);
+    }
+
+    #[test]
+    fn defaults_to_completions_with_base_url() {
+        assert_eq!(
+            resolve_api_style(Some("https://gw.example/v1"), None),
+            ApiStyle::Completions
+        );
+    }
+
+    #[test]
+    fn explicit_style_overrides_base_url_heuristic() {
+        let c = cfg(Some(ApiStyle::Responses));
+        assert_eq!(
+            resolve_api_style(Some("https://gw.example/v1"), Some(&c)),
+            ApiStyle::Responses
+        );
+    }
+
+    #[test]
+    fn explicit_completions_overrides_no_base_url() {
+        let c = cfg(Some(ApiStyle::Completions));
+        assert_eq!(resolve_api_style(None, Some(&c)), ApiStyle::Completions);
+    }
+
+    #[test]
+    fn expand_env_passthrough() {
+        assert_eq!(expand_env("Bearer abc").unwrap(), "Bearer abc");
+    }
+
+    #[test]
+    fn expand_env_reads_var() {
+        // SAFETY: test-only; set and removed within a single test
+        unsafe { std::env::set_var("ZS_TEST_HDR", "secret-value") };
+        assert_eq!(expand_env("${ZS_TEST_HDR}").unwrap(), "secret-value");
+        unsafe { std::env::remove_var("ZS_TEST_HDR") };
+    }
+
+    #[test]
+    fn expand_env_missing_var_errors() {
+        assert!(expand_env("${ZS_DEFINITELY_NOT_SET_98237}").is_err());
     }
 }

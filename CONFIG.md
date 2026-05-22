@@ -37,6 +37,18 @@ Example:
       "provider_type": "openai",
       "base_url": "http://localhost:8000/v1",
       "api_key_env": "VLLM_API_KEY"
+    },
+    "company-gateway": {
+      "provider_type": "openai",
+      "base_url": "https://gateway.example.com/v1",
+      "api_key_env": "GATEWAY_API_KEY",
+      "api_style": "completions",
+      "headers": {
+        "cf-access-client-id": "${CF_ACCESS_CLIENT_ID}",
+        "cf-access-client-secret": "${CF_ACCESS_CLIENT_SECRET}"
+      },
+      "danger_accept_invalid_certs": false,
+      "timeout_secs": 60
     }
   },
   "permission": {
@@ -74,7 +86,7 @@ Accepted top-level keys:
 | `reserve_tokens`          | integer | Tokens to reserve before compaction is triggered. Default: `16384`.                                                                                                         |
 | `keep_recent_tokens`      | integer | Approximate recent-token budget kept verbatim during compaction. Default: `20000`.                                                                                          |
 | `compact_enabled`         | boolean | Enable automatic conversation compaction. Default: `true`.                                                                                                                  |
-| `custom_providers`        | object  | Map of provider aliases to `{ "provider_type", "base_url", "api_key_env" }`. `provider_type` must resolve to one of the built-in provider types; `api_key_env` is optional. |
+| `custom_providers`        | object  | Map of provider aliases to `{ "provider_type", "base_url", "api_key_env", "api_style", "headers", "danger_accept_invalid_certs", "timeout_secs" }`. `provider_type` must resolve to a built-in provider type; `api_key_env` is optional. For OpenAI providers, `api_style` selects `"responses"` or `"completions"`, `headers` sets custom HTTP headers (values support `${ENV_VAR}` expansion), and `timeout_secs` overrides the HTTP timeout. `danger_accept_invalid_certs` disables TLS verification. See the OpenAI API styles section below. |
 | `permission`              | object  | Permission rules; see the permission config notes below.                                                                                                                    |
 | `restrictive`             | boolean | Select restrictive permission mode. Overridden by `accept_all`/`yolo` if those are also true.                                                                               |
 | `accept_all`              | boolean | Select accept mode, equivalent to `--accept-all`. Overridden by `yolo` if true.                                                                                             |
@@ -91,6 +103,48 @@ Accepted top-level keys:
 | `acp_host`                | string  | TCP bind host for ACP server mode (equivalent to `--acp-host`).                                                                                                              |
 | `acp_port`                | integer | TCP bind port for ACP server mode (equivalent to `--acp-port`, default: 7243).                                                                                               |
 | `colors`                  | object  | Background color overrides for the TUI. See the colors section below.                                                                                                       |
+
+## OpenAI API styles and custom headers
+
+The `openai` provider (and any custom provider with `"provider_type": "openai"`)
+can talk to either of rig's two OpenAI transports:
+
+- **`responses`** — the Responses API (`/responses`). Default for
+  `api.openai.com` (no `base_url`). Required for GPT-5-series models, which
+  reject `max_tokens` on Chat Completions and expect `max_completion_tokens`.
+- **`completions`** — the Chat Completions API (`/chat/completions`). Default
+  when a custom `base_url` is set, because most OpenAI-compatible gateways
+  (vLLM, LiteLLM, self-hosted) implement only this endpoint.
+
+Set `api_style` to override the auto-detected default — for example, to force
+`completions` against a gateway, or `responses` against an endpoint that
+actually implements `/responses`.
+
+Custom providers may also send arbitrary HTTP headers, which is useful for
+gateways behind an auth proxy such as Cloudflare Access. Header values support
+`${ENV_VAR}` expansion, so secrets stay in the environment rather than in the
+config file:
+
+```json
+{
+  "custom_providers": {
+    "company-gateway": {
+      "provider_type": "openai",
+      "base_url": "https://gateway.example.com/v1",
+      "api_key_env": "GATEWAY_API_KEY",
+      "headers": {
+        "cf-access-client-id": "${CF_ACCESS_CLIENT_ID}",
+        "cf-access-client-secret": "${CF_ACCESS_CLIENT_SECRET}"
+      }
+    }
+  }
+}
+```
+
+The optional `timeout_secs` field overrides the default HTTP timeout for the
+provider. TLS certificate verification can be disabled with
+`"danger_accept_invalid_certs": true` (for self-signed or internal-CA
+gateways) — use with care, as it makes the connection vulnerable to MITM.
 
 ## Colors
 

@@ -17,6 +17,13 @@ pub struct QuickModelConfig {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiStyle {
+    Responses,
+    Completions,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
     pub provider_type: String,
@@ -24,6 +31,12 @@ pub struct CustomProviderConfig {
     pub api_key_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub danger_accept_invalid_certs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_style: Option<ApiStyle>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,8 +195,8 @@ pub fn save_quick_model(name: &str, provider: &str, model: &str) -> std::io::Res
     std::fs::create_dir_all(parent)?;
     match path.extension().and_then(|e| e.to_str()) {
         Some("toml") => {
-            let content =
-                toml::to_string(&cfg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let content = toml::to_string(&cfg)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             std::fs::write(&path, content)?;
         }
         _ => std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?,
