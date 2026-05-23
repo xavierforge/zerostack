@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+use crate::permission::PermissionConfig;
 use crate::session::storage;
 
 #[cfg(feature = "mcp")]
@@ -13,8 +15,8 @@ use crate::extras::acp::config::AcpServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickModelConfig {
-    pub provider: String,
-    pub model: String,
+    pub provider: CompactString,
+    pub model: CompactString,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,9 +28,9 @@ pub enum ApiStyle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
-    pub provider_type: String,
+    pub provider_type: CompactString,
     pub base_url: String,
-    pub api_key_env: Option<String>,
+    pub api_key_env: Option<CompactString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub danger_accept_invalid_certs: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,31 +41,21 @@ pub struct CustomProviderConfig {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorsConfig {
-    pub chat_background: Option<String>,
-    pub input_background: Option<String>,
-    pub status_background: Option<String>,
-}
-
-impl Default for ColorsConfig {
-    fn default() -> Self {
-        ColorsConfig {
-            chat_background: None,
-            input_background: None,
-            status_background: None,
-        }
-    }
+    pub chat_background: Option<CompactString>,
+    pub input_background: Option<CompactString>,
+    pub status_background: Option<CompactString>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<CompactString>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub provider: Option<CompactString>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,11 +73,19 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_agent_turns: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_text_file_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_providers: Option<HashMap<String, CustomProviderConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "permission-allow")]
+    pub permission_allow: Option<HashMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "permission-ask")]
+    pub permission_ask: Option<HashMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "permission-deny")]
+    pub permission_deny: Option<HashMap<String, Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restrictive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,11 +95,13 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_all_mcp_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_permission_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_tool_details: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_prompt: Option<String>,
+    pub default_prompt: Option<CompactString>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +147,26 @@ impl Config {
     pub fn resolve_compact_enabled(&self) -> bool {
         self.compact_enabled.unwrap_or(true)
     }
+
+    pub fn build_permission_config(&self) -> PermissionConfig {
+        let mut perm_config: PermissionConfig = self
+            .permission
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if let Some(allow) = &self.permission_allow {
+            perm_config.allow_entries = Some(allow.clone());
+        }
+        if let Some(ask) = &self.permission_ask {
+            perm_config.ask_entries = Some(ask.clone());
+        }
+        if let Some(deny) = &self.permission_deny {
+            perm_config.deny_entries = Some(deny.clone());
+        }
+
+        perm_config
+    }
 }
 
 fn resolve_config_path() -> PathBuf {
@@ -184,8 +206,8 @@ pub fn save_quick_model(name: &str, provider: &str, model: &str) -> std::io::Res
     quick_models.insert(
         name.to_string(),
         QuickModelConfig {
-            provider: provider.to_string(),
-            model: model.to_string(),
+            provider: CompactString::new(provider),
+            model: CompactString::new(model),
         },
     );
 
@@ -212,10 +234,10 @@ pub fn load() -> Config {
             std::fs::create_dir_all(parent).ok();
         }
         let default = Config::default();
-        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            if let Ok(content) = toml::to_string(&default) {
-                std::fs::write(&path, content).ok();
-            }
+        if path.extension().and_then(|e| e.to_str()) == Some("toml")
+            && let Ok(content) = toml::to_string(&default)
+        {
+            std::fs::write(&path, content).ok();
         }
         default
     } else {

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use compact_str::CompactString;
 use rig::agent::Agent;
 use rig::client::CompletionClient;
 use rig::completion::{CompletionModel, Message};
@@ -11,6 +12,7 @@ use rig::streaming::StreamingChat;
 use crate::agent::builder;
 use crate::agent::prompt;
 use crate::agent::runner::{self, AgentRunner};
+use crate::auth::{AuthResolver, ProviderKind};
 use crate::cli::Cli;
 use crate::config::{ApiStyle, Config, CustomProviderConfig};
 use crate::context::ContextFiles;
@@ -21,50 +23,35 @@ use crate::permission::checker::PermCheck;
 use crate::sandbox::Sandbox;
 use crate::session::SessionMessage;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ProviderKind {
-    OpenRouter,
-    OpenAI,
-    Anthropic,
-    Gemini,
-    Ollama,
-    Custom,
-}
-
-pub fn parse_provider(name: &str) -> Option<ProviderKind> {
-    match name.to_lowercase().as_str() {
-        "openrouter" => Some(ProviderKind::OpenRouter),
-        "openai" => Some(ProviderKind::OpenAI),
-        "anthropic" => Some(ProviderKind::Anthropic),
-        "gemini" | "google" => Some(ProviderKind::Gemini),
-        "ollama" => Some(ProviderKind::Ollama),
-        "custom" => Some(ProviderKind::Custom),
-        _ => None,
-    }
-}
-
-pub struct ProviderInfo {
+pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub base_url: Option<String>,
-    pub api_key_env: Option<String>,
+    pub api_key_env: Option<CompactString>,
     pub danger_accept_invalid_certs: bool,
 }
 
-pub fn resolve_provider_info(
+pub fn resolve_provider_config(
     name: &str,
     custom_providers: &HashMap<String, CustomProviderConfig>,
-) -> Option<ProviderInfo> {
+) -> anyhow::Result<ProviderConfig> {
     if let Some(custom) = custom_providers.get(name) {
-        let kind = parse_provider(&custom.provider_type)?;
-        return Some(ProviderInfo {
+        let kind = ProviderKind::from_name(&custom.provider_type)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider type: {}", custom.provider_type))?;
+        return Ok(ProviderConfig {
             kind,
             base_url: Some(custom.base_url.clone()),
             api_key_env: custom.api_key_env.clone(),
             danger_accept_invalid_certs: custom.danger_accept_invalid_certs.unwrap_or(false),
         });
     }
-    let kind = parse_provider(name)?;
-    Some(ProviderInfo {
+    let kind = ProviderKind::from_name(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown provider: '{}'. Supported: openrouter, openai, anthropic, gemini, ollama",
+            name
+        )
+    })?;
+
+    Ok(ProviderConfig {
         kind,
         base_url: None,
         api_key_env: None,
@@ -72,71 +59,13 @@ pub fn resolve_provider_info(
     })
 }
 
-fn provider_env_var(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::OpenAI => "OPENAI_API_KEY",
-        ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-        ProviderKind::Gemini => "GEMINI_API_KEY",
-        ProviderKind::Ollama => "OLLAMA_API_KEY",
-        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
-        ProviderKind::Custom => "CUSTOM_API_KEY",
-    }
+/// Re-exported for compatibility with existing code
+pub fn parse_provider(name: &str) -> Option<ProviderKind> {
+    ProviderKind::from_name(name)
 }
 
-fn provider_kind_slug(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::OpenRouter => "openrouter",
-        ProviderKind::OpenAI => "openai",
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::Gemini => "gemini",
-        ProviderKind::Ollama => "ollama",
-        ProviderKind::Custom => "custom",
-    }
-}
-
-fn resolve_api_key(
-    kind: ProviderKind,
-    api_key_env_override: Option<&str>,
-    cli_key: Option<&str>,
-    config_api_keys: Option<&std::collections::HashMap<String, String>>,
-) -> anyhow::Result<String> {
-    if let Some(key) = cli_key.filter(|k| !k.is_empty()) {
-        tracing::warn!(
-            "API key provided via --api-key is visible in process listings (/proc/*/cmdline). Use the {} environment variable instead.",
-            provider_env_var(kind)
-        );
-        return Ok(key.to_string());
-    }
-
-    let env_var = api_key_env_override
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| provider_env_var(kind));
-
-    if let Ok(key) = std::env::var(env_var)
-        && !key.is_empty()
-    {
-        return Ok(key);
-    }
-
-    let slug = provider_kind_slug(kind);
-    if let Some(key) = config_api_keys
-        .and_then(|m| m.get(slug))
-        .filter(|k| !k.is_empty())
-    {
-        return Ok(key.clone());
-    }
-
-    if kind == ProviderKind::Ollama {
-        return Ok(String::new());
-    }
-
-    if kind == ProviderKind::Custom || api_key_env_override.is_some() {
-        return Ok(String::new());
-    }
-
-    anyhow::bail!(
-        "No API key found for {kind:?}. Set the {env_var} environment variable, add it to config.api_keys, or pass --api-key."
-    )
+fn resolve_base_url(config: &ProviderConfig) -> Option<String> {
+    config.base_url.clone()
 }
 
 /// rig 0.37 exposes two distinct OpenAI client types:
@@ -192,7 +121,6 @@ impl AnyClient {
             AnyClient::Anthropic(c) => AnyModel::Anthropic(c.completion_model(name)),
             AnyClient::Gemini(c) => AnyModel::Gemini(c.completion_model(name)),
             AnyClient::Ollama(c) => AnyModel::Ollama(c.completion_model(name)),
-            AnyClient::Custom(c) => AnyModel::Custom(c.completion_model(name)),
         }
     }
 
@@ -466,94 +394,66 @@ pub fn create_client(
     custom_providers: &HashMap<String, CustomProviderConfig>,
     config_api_keys: Option<&HashMap<String, String>>,
 ) -> anyhow::Result<AnyClient> {
-    let info = resolve_provider_info(provider_name, custom_providers).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unknown provider: {}. Supported providers: openrouter, openai, anthropic, gemini, ollama, custom",
-            provider_name
-        )
-    })?;
+    let config = resolve_provider_config(provider_name, custom_providers)?;
+    let base_url = resolve_base_url(&config);
 
-    let key = resolve_api_key(
-        info.kind,
-        info.api_key_env.as_deref(),
-        api_key,
-        config_api_keys,
-    )?;
+    let resolver = AuthResolver::new(config.kind)
+        .with_cli_key(api_key)
+        .with_env_override(config.api_key_env.as_deref())
+        .with_config_keys(config_api_keys)
+        .with_custom_provider_name(Some(provider_name));
+    let key = resolver.resolve()?;
 
-    let base_url = info.base_url.or_else(|| {
-        if info.kind == ProviderKind::Custom {
-            std::env::var("CUSTOM_BASE_URL").ok()
-        } else {
-            None
-        }
-    });
-
-    // If this provider is an entry in custom_providers, pull its config for api_style / headers / timeout.
-    let custom_cfg = custom_providers.get(provider_name);
-
-    // Shared http_client: combines #62's TLS toggle with this PR's headers / timeout.
-    // Only one match arm runs, so it can be moved directly (no clone needed).
-    let http_client =
-        build_http_client(provider_name, info.danger_accept_invalid_certs, custom_cfg)?;
-
-    match info.kind {
-        ProviderKind::OpenAI => Ok(AnyClient::OpenAI(build_openai_client(
-            &key,
-            base_url.as_deref(),
-            custom_cfg,
-            http_client,
-        )?)),
-        ProviderKind::Anthropic => {
-            let mut b = anthropic::Client::builder()
-                .api_key(&key)
-                .http_client(http_client);
-            if let Some(base_url) = &base_url {
-                b = b.base_url(base_url);
-            }
-            Ok(AnyClient::Anthropic(b.build()?))
-        }
-        ProviderKind::Gemini => {
-            let mut b = gemini::Client::builder()
-                .api_key(&key)
-                .http_client(http_client);
-            if let Some(base_url) = &base_url {
-                b = b.base_url(base_url);
-            }
-            Ok(AnyClient::Gemini(b.build()?))
-        }
-        ProviderKind::Ollama => {
-            let key: ollama::OllamaApiKey = key.as_str().into();
-            let mut b = ollama::Client::builder()
-                .api_key(key)
-                .http_client(http_client);
-            if let Some(base_url) = &base_url {
-                b = b.base_url(base_url);
-            }
-            Ok(AnyClient::Ollama(b.build()?))
-        }
-        ProviderKind::OpenRouter => {
-            let mut b = openrouter::Client::builder()
-                .api_key(&key)
-                .http_client(http_client);
-            if let Some(base_url) = &base_url {
-                b = b.base_url(base_url);
-            }
-            Ok(AnyClient::OpenRouter(b.build()?))
-        }
-        ProviderKind::Custom => {
-            let base_url = base_url.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "CUSTOM_BASE_URL environment variable must be set for custom provider"
-                )
-            })?;
-            Ok(AnyClient::Custom(build_openai_client(
-                &key,
-                Some(&base_url),
-                custom_cfg,
-                http_client,
-            )?))
-        }
+    match config.kind {
+        ProviderKind::OpenAI => build_openai_client(&key, base_url.as_deref()),
+        ProviderKind::Anthropic => build_anthropic_client(&key, base_url.as_deref()),
+        ProviderKind::Gemini => build_gemini_client(&key, base_url.as_deref()),
+        ProviderKind::Ollama => build_ollama_client(&key, base_url.as_deref()),
+        ProviderKind::OpenRouter => build_openrouter_client(&key, base_url.as_deref()),
     }
+}
+
+pub fn build_openai_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
+    let builder = match base_url {
+        Some(u) => openai::CompletionsClient::builder()
+            .api_key(key)
+            .base_url(u),
+        None => openai::CompletionsClient::builder().api_key(key),
+    };
+    Ok(AnyClient::OpenAI(builder.build()?))
+}
+
+fn build_anthropic_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
+    let builder = match base_url {
+        Some(u) => anthropic::Client::builder().api_key(key).base_url(u),
+        None => anthropic::Client::builder().api_key(key),
+    };
+    Ok(AnyClient::Anthropic(builder.build()?))
+}
+
+fn build_gemini_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
+    let builder = match base_url {
+        Some(u) => gemini::Client::builder().api_key(key).base_url(u),
+        None => gemini::Client::builder().api_key(key),
+    };
+    Ok(AnyClient::Gemini(builder.build()?))
+}
+
+fn build_ollama_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
+    let ollama_key: ollama::OllamaApiKey = key.into();
+    let builder = match base_url {
+        Some(u) => ollama::Client::builder().api_key(ollama_key).base_url(u),
+        None => ollama::Client::builder().api_key(ollama_key),
+    };
+    Ok(AnyClient::Ollama(builder.build()?))
+}
+
+fn build_openrouter_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
+    let builder = match base_url {
+        Some(u) => openrouter::Client::builder().api_key(key).base_url(u),
+        None => openrouter::Client::builder().api_key(key),
+    };
+    Ok(AnyClient::OpenRouter(builder.build()?))
 }
 
 /// Builds an OpenAiModel (Responses / Completions) into the matching OpenAiAgent.
