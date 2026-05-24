@@ -258,6 +258,9 @@ impl InputEditor {
             Some(Picker::Models(p)) => {
                 handle_models_picker_key(&mut self.buffer, &mut self.cursor, p, key)
             }
+            Some(Picker::Theme(p)) => {
+                handle_theme_picker_key(&mut self.buffer, &mut self.cursor, p, key)
+            }
             None => false,
         };
         if handled {

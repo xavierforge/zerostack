@@ -84,7 +84,7 @@ zerostack --provider openrouter --model deepseek/deepseek-v4-flash
 
 ## Configuration
 
-See [CONFIG.md](CONFIG.md) for config file location, accepted keys, provider
+See [docs/CONFIG.md](docs/CONFIG.md) for config file location, accepted keys, provider
 aliases, permission rules, and MCP server configuration.
 
 ## Prompts system
