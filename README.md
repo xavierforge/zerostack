@@ -41,6 +41,8 @@ cargo install zerostack --features acp
 
 You are now ready to work with a lightweight coding agent! (You can also find pre-built binaries on Github Releases)
 
+Once installed, run `/prompt autoconfig` inside zerostack to explore the documentation and configure the tool interactively.
+
 *note:* If you have questions or you want to collaborate on the project, please join the [dedicated Matrix chatroom](https://app.element.io/#/room/#zerostack-general:matrix.org).
 
 ### Optional: sandbox mode
@@ -59,9 +61,6 @@ dnf install bubblewrap
 # Arch
 pacman -S bubblewrap
 ```
-
-Once installed, run `/prompt autoconfig` inside zerostack to explore the
-documentation and configure the tool interactively.
 
 ## Quick start
 
@@ -89,6 +88,8 @@ zerostack --provider openrouter --model deepseek/deepseek-v4-flash
 
 See [docs/CONFIG.md](docs/CONFIG.md) for config file location, accepted keys, provider
 aliases, permission rules, and MCP server configuration.
+
+You can run `/prompt autoconfig` in order to use a specialized agent that allows to navigate the documentation and customize your zerostack setup.
 
 ## Prompts system
 
