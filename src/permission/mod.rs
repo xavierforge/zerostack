@@ -42,6 +42,21 @@ pub struct PermissionConfig {
     pub deny_entries: Option<HashMap<String, Vec<String>>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PermissionConfigs {
+    pub glob: PermissionConfig,
+    pub regex: PermissionConfig,
+}
+
+impl From<PermissionConfig> for PermissionConfigs {
+    fn from(glob: PermissionConfig) -> Self {
+        PermissionConfigs {
+            glob,
+            regex: PermissionConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SecurityMode {
     Standard,

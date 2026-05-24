@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use smallvec::SmallVec;
 
 use crate::permission::pattern::Pattern;
-use crate::permission::{Action, PermissionConfig, SecurityMode, ToolPerm};
+use crate::permission::{Action, PermissionConfig, PermissionConfigs, SecurityMode, ToolPerm};
 
 pub type PermCheck = Arc<Mutex<PermissionChecker>>;
 
@@ -28,14 +28,10 @@ pub struct PermissionChecker {
 }
 
 impl PermissionChecker {
-    pub fn new(
+    fn compile_config(
         config: &PermissionConfig,
-        mode: SecurityMode,
-        working_dir: Option<std::path::PathBuf>,
-    ) -> Self {
-        let default_action = config.default.unwrap_or(Action::Allow);
-        let doom_loop_action = config.doom_loop.unwrap_or(Action::Ask);
-
+        is_regex: bool,
+    ) -> HashMap<String, Vec<(Pattern, Action)>> {
         let mut rules: HashMap<String, Vec<(Pattern, Action)>> = HashMap::new();
         for (tool_name, tool_perm) in [
             ("bash", &config.bash),
@@ -51,15 +47,42 @@ impl PermissionChecker {
             let mut entries = Vec::new();
             match tp {
                 ToolPerm::Simple(action) => {
-                    entries.push((Pattern::new("*"), *action));
+                    let pat = if is_regex {
+                        Pattern::new_regex(".*")
+                    } else {
+                        Pattern::new("*")
+                    };
+                    entries.push((pat, *action));
                 }
                 ToolPerm::Granular(map) => {
                     for (pat, action) in map {
-                        entries.push((Pattern::new(pat), *action));
+                        let pat = if is_regex {
+                            Pattern::new_regex(pat)
+                        } else {
+                            Pattern::new(pat)
+                        };
+                        entries.push((pat, *action));
                     }
                 }
             }
             rules.insert(tool_name.to_string(), entries);
+        }
+        rules
+    }
+
+    pub fn new(
+        configs: &PermissionConfigs,
+        mode: SecurityMode,
+        working_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        let default_action = configs.glob.default.or(configs.regex.default).unwrap_or(Action::Allow);
+        let doom_loop_action = configs.glob.doom_loop.or(configs.regex.doom_loop).unwrap_or(Action::Ask);
+
+        let mut rules = Self::compile_config(&configs.glob, false);
+        let regex_rules = Self::compile_config(&configs.regex, true);
+        for (tool, entries) in regex_rules {
+            let entry = rules.entry(tool).or_default();
+            entry.extend(entries);
         }
 
         fn merge_entries(
@@ -77,9 +100,9 @@ impl PermissionChecker {
             }
         }
 
-        merge_entries(&mut rules, &config.allow_entries, Action::Allow);
-        merge_entries(&mut rules, &config.ask_entries, Action::Ask);
-        merge_entries(&mut rules, &config.deny_entries, Action::Deny);
+        merge_entries(&mut rules, &configs.glob.allow_entries, Action::Allow);
+        merge_entries(&mut rules, &configs.glob.ask_entries, Action::Ask);
+        merge_entries(&mut rules, &configs.glob.deny_entries, Action::Deny);
 
         if !rules.contains_key("bash") {
             let mut defaults = Vec::new();
@@ -89,7 +112,8 @@ impl PermissionChecker {
             rules.insert("bash".to_string(), defaults);
         }
 
-        let ext_dir_rules = config
+        let ext_dir_rules = configs
+            .glob
             .external_directory
             .as_ref()
             .map(|map| {

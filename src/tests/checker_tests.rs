@@ -1,12 +1,16 @@
 use crate::permission::checker::{CheckResult, PermissionChecker};
-use crate::permission::{Action, PermissionConfig, SecurityMode, ToolPerm};
+use crate::permission::{Action, PermissionConfig, PermissionConfigs, SecurityMode, ToolPerm};
 
 fn make_checker(mode: SecurityMode) -> PermissionChecker {
     PermissionChecker::new(
-        &PermissionConfig::default(),
+        &PermissionConfigs::default(),
         mode,
         Some(std::path::PathBuf::from("/home/user/project")),
     )
+}
+
+fn configs_from(config: PermissionConfig) -> PermissionConfigs {
+    PermissionConfigs::from(config)
 }
 
 // --- SecurityMode behavior ---
@@ -39,7 +43,7 @@ fn accept_auto_allows_inside_working_dir() {
         ..PermissionConfig::default()
     };
     let mut checker = PermissionChecker::new(
-        &config,
+        &configs_from(config),
         SecurityMode::Accept,
         Some(std::path::PathBuf::from("/home/user/project")),
     );
@@ -172,7 +176,7 @@ fn explicit_granular_rules_take_effect() {
         )),
         ..PermissionConfig::default()
     };
-    let mut checker = PermissionChecker::new(&config, SecurityMode::Standard, None);
+    let mut checker = PermissionChecker::new(&configs_from(config), SecurityMode::Standard, None);
     assert_eq!(checker.check("read", "README.md"), CheckResult::Allowed);
     assert_eq!(checker.check("read", "main.rs"), CheckResult::Ask);
 }
@@ -186,7 +190,7 @@ fn standard_allows_path_tools_in_cwd_despite_deny_rules() {
         ..PermissionConfig::default()
     };
     let mut checker = PermissionChecker::new(
-        &config,
+        &configs_from(config),
         SecurityMode::Standard,
         Some(std::path::PathBuf::from("/home/user/project")),
     );
@@ -206,7 +210,7 @@ fn standard_allows_write_in_cwd_despite_deny_rules() {
         ..PermissionConfig::default()
     };
     let mut checker = PermissionChecker::new(
-        &config,
+        &configs_from(config),
         SecurityMode::Standard,
         Some(std::path::PathBuf::from("/home/user/project")),
     );
@@ -256,4 +260,94 @@ fn standard_list_dir_in_cwd_is_allowed() {
         "expected Allowed for list_dir in CWD, got {:?}",
         result,
     );
+}
+
+// --- Regex permission rules ---
+
+#[test]
+fn regex_granular_rules_take_effect() {
+    let config = PermissionConfig {
+        read: Some(ToolPerm::Granular(
+            [
+                (r"\.md$".to_string(), Action::Allow),
+                (r"\.rs$".to_string(), Action::Ask),
+            ]
+            .into(),
+        )),
+        ..PermissionConfig::default()
+    };
+    let configs = PermissionConfigs {
+        regex: config,
+        ..PermissionConfigs::default()
+    };
+    let mut checker = PermissionChecker::new(&configs, SecurityMode::Standard, None);
+    assert_eq!(checker.check("read", "README.md"), CheckResult::Allowed);
+    assert_eq!(checker.check("read", "main.rs"), CheckResult::Ask);
+    assert_eq!(checker.check("read", "main.py"), CheckResult::Allowed);
+}
+
+#[test]
+fn regex_simple_action() {
+    let config = PermissionConfig {
+        bash: Some(ToolPerm::Simple(Action::Ask)),
+        ..PermissionConfig::default()
+    };
+    let configs = PermissionConfigs {
+        regex: config,
+        ..PermissionConfigs::default()
+    };
+    let mut checker = PermissionChecker::new(&configs, SecurityMode::Standard, None);
+    let result = checker.check("bash", "anything");
+    assert!(matches!(result, CheckResult::Ask));
+}
+
+#[test]
+fn regex_and_glob_rules_merge() {
+    let glob = PermissionConfig {
+        read: Some(ToolPerm::Granular(
+            [("*.md".to_string(), Action::Allow)].into(),
+        )),
+        ..PermissionConfig::default()
+    };
+    let regex = PermissionConfig {
+        read: Some(ToolPerm::Granular(
+            [(r"\.rs$".to_string(), Action::Ask)].into(),
+        )),
+        ..PermissionConfig::default()
+    };
+    let configs = PermissionConfigs { glob, regex };
+    let mut checker = PermissionChecker::new(&configs, SecurityMode::Standard, None);
+    assert_eq!(checker.check("read", "README.md"), CheckResult::Allowed);
+    assert_eq!(checker.check("read", "main.rs"), CheckResult::Ask);
+}
+
+#[test]
+fn regex_default_action_used_when_no_glob_default() {
+    let glob = PermissionConfig::default();
+    let regex = PermissionConfig {
+        default: Some(Action::Ask),
+        ..PermissionConfig::default()
+    };
+    let configs = PermissionConfigs { glob, regex };
+    let mut checker = PermissionChecker::new(&configs, SecurityMode::Standard, None);
+    // Default from regex config should be used when glob has no default
+    let result = checker.check("unknown_tool", "anything");
+    assert!(matches!(result, CheckResult::Ask));
+}
+
+#[test]
+fn regex_glob_default_precedence() {
+    let glob = PermissionConfig {
+        default: Some(Action::Allow),
+        ..PermissionConfig::default()
+    };
+    let regex = PermissionConfig {
+        default: Some(Action::Ask),
+        ..PermissionConfig::default()
+    };
+    let configs = PermissionConfigs { glob, regex };
+    let mut checker = PermissionChecker::new(&configs, SecurityMode::Standard, None);
+    // Glob default should take precedence over regex default
+    let result = checker.check("unknown_tool", "anything");
+    assert!(matches!(result, CheckResult::Allowed));
 }

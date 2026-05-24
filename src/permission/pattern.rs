@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 pub struct Pattern {
     regex: OnceLock<Regex>,
     pub original: String,
+    is_regex: bool,
 }
 
 impl Pattern {
@@ -12,13 +13,26 @@ impl Pattern {
         Pattern {
             regex: OnceLock::new(),
             original: pattern.to_string(),
+            is_regex: false,
+        }
+    }
+
+    pub fn new_regex(pattern: &str) -> Self {
+        Pattern {
+            regex: OnceLock::new(),
+            original: pattern.to_string(),
+            is_regex: true,
         }
     }
 
     pub fn matches(&self, input: &str) -> bool {
         let regex = self.regex.get_or_init(|| {
             let expanded = expand_home(&self.original);
-            let regex_str = glob_to_regex(&expanded);
+            let regex_str = if self.is_regex {
+                expanded
+            } else {
+                glob_to_regex(&expanded)
+            };
             Regex::new(&regex_str).unwrap_or_else(|_| Regex::new("^$").unwrap())
         });
         regex.is_match(input)
@@ -30,6 +44,7 @@ impl Clone for Pattern {
         Pattern {
             regex: OnceLock::new(),
             original: self.original.clone(),
+            is_regex: self.is_regex,
         }
     }
 }

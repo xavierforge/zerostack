@@ -586,7 +586,7 @@ mod tests {
 
     fn cfg(api_style: Option<ApiStyle>) -> CustomProviderConfig {
         CustomProviderConfig {
-            provider_type: "openai".to_string(),
+            provider_type: "openai".into(),
             base_url: "https://gw.example/v1".to_string(),
             api_key_env: None,
             danger_accept_invalid_certs: None,

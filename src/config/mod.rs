@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use crate::permission::PermissionConfig;
+use crate::permission::{PermissionConfig, PermissionConfigs};
 use crate::session::storage;
 
 #[cfg(feature = "mcp")]
@@ -80,6 +80,8 @@ pub struct Config {
     pub custom_providers: Option<HashMap<String, CustomProviderConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "permission-regex")]
+    pub permission_regex: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "permission-allow")]
     pub permission_allow: Option<HashMap<String, Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "permission-ask")]
@@ -148,24 +150,32 @@ impl Config {
         self.compact_enabled.unwrap_or(true)
     }
 
-    pub fn build_permission_config(&self) -> PermissionConfig {
-        let mut perm_config: PermissionConfig = self
+    pub fn build_permission_config(&self) -> PermissionConfigs {
+        let glob: PermissionConfig = self
             .permission
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
+        let regex: PermissionConfig = self
+            .permission_regex
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let mut perm_configs = PermissionConfigs { glob, regex };
+
         if let Some(allow) = &self.permission_allow {
-            perm_config.allow_entries = Some(allow.clone());
+            perm_configs.glob.allow_entries = Some(allow.clone());
         }
         if let Some(ask) = &self.permission_ask {
-            perm_config.ask_entries = Some(ask.clone());
+            perm_configs.glob.ask_entries = Some(ask.clone());
         }
         if let Some(deny) = &self.permission_deny {
-            perm_config.deny_entries = Some(deny.clone());
+            perm_configs.glob.deny_entries = Some(deny.clone());
         }
 
-        perm_config
+        perm_configs
     }
 }
 
