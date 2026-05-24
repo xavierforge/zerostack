@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env::VarError;
 
 /// Kind of AI provider
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,13 @@ impl AuthResolver {
     }
 
     pub fn resolve(&self) -> anyhow::Result<String> {
+        self.resolve_with_env(|name| std::env::var(name))
+    }
+
+    pub fn resolve_with_env<F: Fn(&str) -> Result<String, VarError>>(
+        &self,
+        get_env: F,
+    ) -> anyhow::Result<String> {
         // Priority 1: CLI argument
         if let Some(ref key) = self.cli_key {
             tracing::warn!(
@@ -82,7 +90,7 @@ impl AuthResolver {
             .as_deref()
             .unwrap_or_else(|| self.env_var_name());
 
-        if let Ok(key) = std::env::var(env_var)
+        if let Ok(key) = get_env(env_var)
             && !key.is_empty()
         {
             return Ok(key);
