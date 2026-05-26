@@ -8,7 +8,7 @@
 //! can write files directly. Paths are built from the public `root`/`project`
 //! fields (Mem's own helpers are private).
 
-use crate::agent::memory::{MAX_INJECT_BYTES, Mem, WriteMode, WriteTarget};
+use crate::agent::memory::{MAX_INJECT_BYTES, Mem, WriteMode, WriteTarget, append_memory_block};
 use std::fs;
 use std::path::PathBuf;
 
@@ -439,4 +439,24 @@ fn search_empty_query_returns_no_hits() {
     .unwrap();
     assert!(m.search("   ").hits.is_empty()); // whitespace-only -> no terms
     cleanup(&m);
+}
+
+// ---- injection ------------------------------------------------------------
+
+#[test]
+fn append_memory_block_rules() {
+    // None: no-op
+    let mut p = "BASE".to_string();
+    append_memory_block(&mut p, None);
+    assert_eq!(p, "BASE");
+
+    // empty: no-op (an empty store leaves zero trace)
+    let mut p = "BASE".to_string();
+    append_memory_block(&mut p, Some(""));
+    assert_eq!(p, "BASE");
+
+    // non-empty: appended after a separator, with the preamble preserved
+    let mut p = "BASE".to_string();
+    append_memory_block(&mut p, Some("<memory>x</memory>"));
+    assert_eq!(p, "BASE\n\n---\n\n<memory>x</memory>");
 }

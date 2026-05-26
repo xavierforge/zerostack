@@ -30,6 +30,17 @@ fn truncate_marked(mut s: String, max: usize) -> String {
     s
 }
 
+/// Append the injected memory block to a system-prompt preamble.
+/// None/empty is a no-op, so an empty store leaves zero trace.
+pub fn append_memory_block(preamble: &mut String, memory: Option<&str>) {
+    if let Some(m) = memory
+        && !m.is_empty()
+    {
+        preamble.push_str("\n\n---\n\n");
+        preamble.push_str(m);
+    }
+}
+
 /// Filesystem-safe, collision-resistant slug for a project path:
 /// "<sanitized-basename>-<8 hex of full-path hash>". Two different absolute
 /// paths that share a basename still get distinct slugs.
