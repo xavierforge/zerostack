@@ -120,7 +120,7 @@ impl Tool for ReadTool {
 
         let info = match es {
             EditSystem::Hashedit => {
-                let file_crc = crc32_hex(content.as_bytes());
+                let file_crc = crc32_hex(content.replace("\r\n", "\n").as_bytes());
                 format!(
                     "File: {} ({} lines total, lines {}-{}) [CRC: {}]\n\n{}",
                     path,
