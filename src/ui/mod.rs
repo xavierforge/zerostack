@@ -224,6 +224,10 @@ pub async fn run_interactive(
     #[cfg(feature = "git-worktree")]
     let mut wt_return_path: Option<String> = None;
     let mut btw_active = false;
+    let mut btw_msg_count: usize = 0;
+    let mut btw_input_tokens: u64 = 0;
+    let mut btw_output_tokens: u64 = 0;
+    let mut btw_cost: f64 = 0.0;
 
     let perm_mode = || -> Option<String> {
         permission.as_ref().map(|p| {
@@ -497,6 +501,10 @@ pub async fn run_interactive(
                                         renderer.write_line("usage: /btw <message>", C_AGENT)?;
                                         Ok(())
                                     } else {
+                                        btw_msg_count = session.messages.len();
+                                        btw_input_tokens = session.total_input_tokens;
+                                        btw_output_tokens = session.total_output_tokens;
+                                        btw_cost = session.total_cost;
                                         ensure_agent(
                                             &mut agent, &client, session, cli, cfg, context,
                                             &permission, &ask_tx, &sandbox, reasoning_enabled,
@@ -726,7 +734,12 @@ pub async fn run_interactive(
                     #[cfg(feature = "mcp")] mcp_ref,
                 ).await?;
                 if btw_active && !is_running {
-                    session.messages.pop();
+                    while session.messages.len() > btw_msg_count {
+                        session.messages.pop();
+                    }
+                    session.total_input_tokens = btw_input_tokens;
+                    session.total_output_tokens = btw_output_tokens;
+                    session.total_cost = btw_cost;
                     if !cli.no_session {
                         let _ = crate::session::storage::save_session(session);
                     }

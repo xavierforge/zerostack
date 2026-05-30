@@ -22,7 +22,7 @@ Minimal coding agent written in Rust, inspired by [pi](https://pi.dev/docs/lates
 
 _zerostack_ is one of the smallest and most performant coding agents on the market.
 
-- Lines of code: ~12k LoC
+- Lines of code: ~13k LoC
 - Binary size: 12.9MB
 - RAM footprint: ~16MB on average, with peaks at ~24MB (vs ~300MB with peaks at ~700MB for opencode or other JS-based coding agents)
 - CPU usage: 0.0% on idle, ~1.5% when using tools (measured on an Intel i5 7th gen, vs ~2% on idle and ~20% when working for opencode)
@@ -62,6 +62,8 @@ dnf install bubblewrap
 pacman -S bubblewrap
 ```
 
+There is also support for zerobox as an alternative sandbox backend.
+
 ## Quick start
 
 ```bash
@@ -93,8 +95,8 @@ You can run `/prompt autoconfig` in order to use a specialized agent that allows
 
 ## Prompts system
 
-_zerostack_ includes a set of built-in system prompts that change the agent's behavior and tone.  
-The idea is to build a complete suite of prompts that can fully substitute skills like [superpower](https://github.com/obra/superpowers) or the [Claude's official skills](https://github.com/anthropics/claude-plugins-official/tree/main).  
+_zerostack_ includes a set of built-in system prompts that change the agent's behavior and tone.
+The idea is to build a complete suite of prompts that can fully substitute skills like [superpower](https://github.com/obra/superpowers) or the [Claude's official skills](https://github.com/anthropics/claude-plugins-official/tree/main).
 You can switch between different prompts or list all registered prompts using `/prompt`.
 
 Built-in prompts:
@@ -115,13 +117,6 @@ Built-in prompts:
 You can also create custom prompts by placing markdown files in
 `$XDG_CONFIG_HOME/zerostack/prompts/` and referencing them by name.
 
-Custom prompts can set the security mode automatically by adding
-`%%mode=<mode>` as the **first line** of the `.md` file (e.g.
-`%%mode=readonly`). Valid modes: `standard`, `restrictive`, `readonly`,
-`guarded`, `yolo`. Use `%%mode=last_user_mode` to keep the mode the user
-last set via `/mode` or startup config. The directive line is stripped
-from the prompt content before it reaches the agent.
-
 Additionally, the agent automatically loads `AGENTS.md` or `CLAUDE.md` from the
 project root or any ancestor directory, injecting their contents into the
 system prompt. Use `-n` / `--no-context-files` to disable this.
@@ -137,19 +132,6 @@ zerostack has five permission modes:
 | **guarded** | — | Allow read tools. Ask for writes, edits, bash, and everything else. Config rules apply. |
 | **standard** | (default) | Allow path tools (read/write/edit/list_dir) within CWD and subdirectories. Safe bash commands (ls, cat, git log, cargo check) auto-allowed. Ask for external paths and unrecognized commands. Config rules apply and override mode defaults. |
 | **yolo** | `--yolo` | Allow everything, but prompt for destructive bash commands (rm, dd, mkfs, etc.). Config rules apply. |
-
-In all modes except `dangerously-skip-permissions`, config-based rules
-(`permission`, `permission-allow`, etc.) are always checked and take
-priority over mode defaults.
-
-### Configurable rule application
-
-The `permission-modes` config key controls which modes apply config-based rules.
-By default, it includes `guarded`, `standard`, and `yolo`. Modes not in this
-list (such as `restrictive` and `readonly` by default) skip config-based rule
-matching and rely entirely on their built-in mode behavior.
-
-### `--dangerously-skip-permissions`
 
 The `--dangerously-skip-permissions` flag completely bypasses all permission
 checks, allowing every tool operation without any guard. This is not a mode
