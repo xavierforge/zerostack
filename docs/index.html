@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>zerostack — minimal coding agent</title>
+<link rel="icon" href="https://raw.githubusercontent.com/gi-dellav/zerostack/main/assets/logo_rounded.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -16,6 +17,12 @@ a{color:var(--accent);text-decoration:none;transition:color .15s}
 a:hover{color:var(--accent-dim)}
 ::selection{background:var(--accent);color:var(--bg)}
 .container{max-width:820px;margin:0 auto;padding:0 24px}
+/* hero banner */
+.hero{background:var(--surface);border-bottom:1px solid var(--border);overflow:hidden}
+.hero img{display:block;width:100%;max-width:1000px;margin:0 auto;height:auto;image-rendering:pixelated}
+/* screenshot */
+.screenshot-wrap{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:24px}
+.screenshot-wrap img{display:block;width:100%;height:auto}
 /* header */
 header{padding:48px 0 32px;border-bottom:1px solid var(--border)}
 .header-inner{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
@@ -38,6 +45,12 @@ p{margin-bottom:16px}
 .perf-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px}
 .perf-card .value{font-size:1.3rem;font-weight:700;color:var(--accent)}
 .perf-card .label{font-size:.75rem;color:var(--text-dim);margin-top:4px}
+/* callout */
+.callouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:32px;margin-top:-8px}
+.callout{background:var(--surface);border:1px solid var(--accent);border-radius:6px;padding:16px}
+.callout .callout-title{font-size:.9rem;font-weight:700;color:var(--accent);margin-bottom:4px}
+.callout .callout-desc{font-size:.78rem;color:var(--text-dim);line-height:1.6}
+.callout .callout-desc a{color:var(--accent)}
 /* feature list */
 .features{list-style:none;margin-bottom:16px}
 .features li{padding:8px 0 8px 20px;position:relative;font-size:.88rem;border-bottom:1px solid var(--border)}
@@ -75,68 +88,73 @@ footer{padding:32px 0;text-align:center;font-size:.78rem;color:var(--text-dim)}
 
 <header>
 <div class="container header-inner">
-<img class="logo" src="../assets/logo.png" alt="zerostack logo" width="56" height="56">
+<img class="logo" src="https://raw.githubusercontent.com/gi-dellav/zerostack/main/assets/logo.png" alt="zerostack logo" width="56" height="56">
 <div class="header-text">
 <h1>zerostack</h1>
 <div class="tagline">~13k LoC · 12.9 MB binary · ~16 MB RAM</div>
 <div class="header-links">
-<a href="#features">Features</a>
-<a href="#performance">Performance</a>
+<a href="#overview">Overview</a>
 <a href="#quickstart">Quick Start</a>
 <a href="#install">Install</a>
 <a href="https://github.com/gi-dellav/zerostack" target="_blank" rel="noopener">GitHub ↗</a>
+<a href="https://app.element.io/#/room/#zerostack-general:matrix.org" target="_blank" rel="noopener">Matrix ↗</a>
 </div>
 </div>
 </div>
 </header>
 
+<div class="hero">
+<img src="https://raw.githubusercontent.com/gi-dellav/zerostack/main/assets/banner.png" alt="zerostack banner">
+</div>
+
 <main class="container">
 
-<!-- about -->
-<section id="about">
-<h2>About</h2>
+<!-- overview -->
+<section id="overview">
+<h2>Overview</h2>
 <p>
-<strong>zerostack</strong> is a minimal coding agent written in Rust,
-inspired by <a href="https://pi.dev/docs/latest/usage" target="_blank" rel="noopener">pi</a>
-and <a href="https://opencode.ai/" target="_blank" rel="noopener">opencode</a>.
-It is one of the smallest and most performant coding agents on the market — 
-designed to be lightweight, composable, and fast.
+Minimal coding agent written in Rust — ~13k LoC, 12.9 MB binary, ~16 MB RAM.
+Peak RAM ~24 MB vs ~700 MB for JS-based agents. CPU: 0.0% idle, ~1.5% under load.
 </p>
-</section>
-
-<!-- perf -->
-<section id="performance">
-<h2>Performance</h2>
 <div class="perf-grid">
 <div class="perf-card"><div class="value">~13k</div><div class="label">Lines of Code</div></div>
 <div class="perf-card"><div class="value">12.9 MB</div><div class="label">Binary Size</div></div>
 <div class="perf-card"><div class="value">~16 MB</div><div class="label">RAM (avg)</div></div>
 <div class="perf-card"><div class="value">0.0%</div><div class="label">CPU (idle)</div></div>
 </div>
-<p>
-Peak RAM ~24 MB vs ~700 MB for JS-based agents. CPU usage at ~1.5% when
-using tools (measured on Intel i5 7th gen) vs ~20% for alternatives.
-</p>
+<ul class="features">
+<li><strong>Multi-provider</strong> — OpenRouter, OpenAI, Anthropic, Gemini, Ollama</li>
+<li><strong>Permission system</strong> — 5 modes, per-tool patterns, session allowlists</li>
+<li><strong>Terminal UI</strong> — crossterm, markdown rendering, mouse support, scrollback</li>
+<li><strong>Prompts system</strong> — 10 built-in prompts, switchable at runtime</li>
+<li><strong>Session management</strong> — save/load/resume, auto-compaction</li>
+<li><strong>MCP support</strong> — connect external tool servers</li>
+<li><strong>Loop system</strong> — iterative coding for long-horizon tasks</li>
+<li><strong>Git Worktrees</strong> — branch-per-task workflow</li>
+<li><strong>ACP support</strong> — editor integration (Zed, etc.)</li>
+<li><strong>Sandbox mode</strong> — bubblewrap / zerobox isolation</li>
+<li><strong>Exa search</strong> — WebFetch &amp; WebSearch tools</li>
+</ul>
+<div class="screenshot-wrap">
+<img src="https://raw.githubusercontent.com/gi-dellav/zerostack/main/assets/tui_screenshot0.png" alt="zerostack TUI screenshot">
+</div>
 </section>
 
-<!-- features -->
-<section id="features">
-<h2>Features</h2>
-<ul class="features">
-<li><strong>Multi-provider</strong> — OpenRouter, OpenAI, Anthropic, Gemini, Ollama, plus custom providers</li>
-<li><strong>Standard tools</strong> — all tooling exposed to coding agents as described by opencode docs</li>
-<li><strong>Permission system</strong> — five modes (<code>restrictive</code>, <code>readonly</code>, <code>guarded</code>, <code>standard</code>, <code>yolo</code>) with per-tool patterns, session allowlists, and doom-loop detection</li>
-<li><strong>Session management</strong> — save/load/resume sessions, auto-compaction within context windows</li>
-<li><strong>Terminal UI</strong> — crossterm-based, markdown rendering, mouse selection/copy, scrollback, reasoning visibility toggle</li>
-<li><strong>Prompts system</strong> — switch between <code>code</code>, <code>plan</code>, <code>review</code>, <code>debug</code>, <code>ask</code>, <code>brainstorm</code>, <code>frontend-design</code>, <code>review-security</code>, <code>simplify</code>, <code>write-prompt</code> at runtime</li>
-<li><strong>MCP support</strong> — connect MCP servers for extended tooling (compile-time feature)</li>
-<li><strong>Integrated Exa search</strong> — WebFetch and WebSearch tools</li>
-<li><strong>Loop system</strong> — iterative coding loops for long-horizon tasks (<code>/loop</code>)</li>
-<li><strong>Git Worktrees</strong> — branch-per-task workflow via <code>/worktree</code>, <code>/wt-merge</code>, <code>/wt-exit</code></li>
-<li><strong>ACP support</strong> (gated) — Agent Communication Protocol server for editor integration (Zed, etc.)</li>
-<li><strong>Sandbox mode</strong> — bubblewrap / zerobox isolation for bash commands</li>
-</ul>
-</section>
+<!-- callouts -->
+<div class="callouts">
+<div class="callout">
+<div class="callout-title">/prompt autoconfig</div>
+<div class="callout-desc">Run this inside zerostack after install to explore the docs and configure everything interactively.</div>
+</div>
+<div class="callout">
+<div class="callout-title">--parallel</div>
+<div class="callout-desc">Run multiple agents on the same repo. Each gets a temporary git worktree, merged &amp; cleaned up on exit.</div>
+</div>
+<div class="callout">
+<div class="callout-title">Matrix chatroom</div>
+<div class="callout-desc">Questions? Ideas? Join the <a href="https://app.element.io/#/room/#zerostack-general:matrix.org" target="_blank" rel="noopener">zerostack-general room</a> on Matrix.</div>
+</div>
+</div>
 
 <!-- prompts -->
 <section id="prompts">
@@ -259,6 +277,14 @@ dnf install bubblewrap
 pacman -S bubblewrap</code></pre>
 </section>
 
+<!-- parallel -->
+<section id="parallel">
+<h2>Parallel Agent</h2>
+<p>Run multiple zerostack agents on the same repository simultaneously without manual git worktree management.</p>
+<pre><code>zerostack --parallel</code></pre>
+<p>Each parallel agent operates in a temporary git worktree. Changes are merged and the worktree is removed when the agent exits.</p>
+</section>
+
 <!-- acp -->
 <section id="acp">
 <h2>ACP (Agent Communication Protocol)</h2>
@@ -300,7 +326,7 @@ zerostack --acp --acp-host 0.0.0.0 --acp-port 7243</code></pre>
 <footer>
 <div class="container">
 <p>zerostack &mdash; by <a href="https://github.com/gi-dellav" target="_blank" rel="noopener">Giuseppe Della Vedova</a></p>
-<p>Join the <a href="https://app.element.io/#/room/#zerostack-general:matrix.org" target="_blank" rel="noopener">Matrix chatroom</a></p>
+<p>Community &amp; support on <a href="https://app.element.io/#/room/#zerostack-general:matrix.org" target="_blank" rel="noopener">Matrix (#zerostack-general)</a></p>
 </div>
 </footer>
 
