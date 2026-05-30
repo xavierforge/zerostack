@@ -497,11 +497,32 @@ pub async fn run_interactive(
                                             let wt_path = parts[3];
                                             let _repo_name = parts[4];
                                             let prompt = format!(
-                                                "I'm in a git worktree on branch '{}' at '{}'. \
-                                                 Please merge branch '{}' into '{}' in the main repo at '{}', \
-                                                 push the changes, and delete the worktree at '{}'. \
-                                                 After merging, go back to the main repo at '{}'.",
-                                                branch, wt_path, branch, target, main_path, wt_path, main_path
+                                                "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
+                                                 Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
+                                                 Follow these steps:\n\
+                                                 1. cd {main_path}\n\
+                                                 2. git fetch --all\n\
+                                                 3. git checkout {target}\n\
+                                                 4. git pull --no-edit\n\
+                                                 5. git merge --no-edit {branch}\n\n\
+                                                 After step 5, CHECK THE EXIT CODE and output.\n\
+                                                 - If the merge Succeeded (no conflicts), continue to step 6.\n\
+                                                 - If there is a MERGE CONFLICT:\n\
+                                                   a. Run: git diff --name-only --diff-filter=U\n\
+                                                   b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
+                                                   c. Ask the user what to do. Give them these options:\n\
+                                                      - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
+                                                      - 'resolve <file>': you help them fix the conflict in that file.\n\
+                                                      - 'leave': leave the conflict state as-is for manual resolution.\n\
+                                                   d. WAIT for the user's response before continuing.\n\
+                                                   e. Follow their instruction.\n\n\
+                                                 6. If the merge succeeded (or conflicts were resolved):\n\
+                                                   - git push\n\
+                                                   - git worktree remove {wt_path}\n\
+                                                   - git branch -D {branch}\n\n\
+                                                 7. cd {main_path} and report completion.\n\n\
+                                                 Important: Do NOT skip any step. Always check for conflicts after merge.",
+                                                branch = branch, wt_path = wt_path, target = target, main_path = main_path
                                             );
                                             session.add_message(MessageRole::User, &prompt);
                                             let history = crate::agent::runner::convert_history(session);
@@ -679,7 +700,79 @@ pub async fn run_interactive(
     {
         let target = crate::extras::git_worktree::default_branch(&info.main_repo_path)
             .unwrap_or_else(|| "main".to_string());
-        let _ = crate::extras::git_worktree::merge(&info, &target);
+
+        let _ = renderer.write_line(
+            &format!(
+                "auto-merging worktree '{}' into '{}'...",
+                info.branch, target
+            ),
+            C_AGENT,
+        );
+        let (state, outcome) = crate::extras::git_worktree::try_merge(&info, &target);
+        match outcome {
+            crate::extras::git_worktree::MergeOutcome::Success => {
+                match crate::extras::git_worktree::complete_merge(&state) {
+                    Ok(()) => {
+                        let _ = renderer.write_line(
+                            &format!("merged '{}' into '{}' and cleaned up", info.branch, target),
+                            C_AGENT,
+                        );
+                    }
+                    Err(e) => {
+                        let _ = renderer.write_line(
+                            &format!("merge succeeded but cleanup failed: {}", e),
+                            C_ERROR,
+                        );
+                    }
+                }
+            }
+            crate::extras::git_worktree::MergeOutcome::Conflicts(files) => {
+                let _ = renderer.write_line(
+                    &format!("merge conflict in {} file(s):", files.len()),
+                    C_ERROR,
+                );
+                for f in &files {
+                    let _ = renderer.write_line(&format!("  {}", f), C_ERROR);
+                }
+                let _ = renderer
+                    .write_line("Keep conflict state for manual resolution? [y/N] ", C_PERM);
+
+                let abort = loop {
+                    tokio::select! {
+                        Some(ev) = user_rx.recv() => {
+                            if let crate::event::UserEvent::Key(key) = ev {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Char('Y') => break false,
+                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => break true,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                };
+
+                if abort {
+                    let _ = crate::extras::git_worktree::cancel_merge(&state);
+                    let _ = renderer.write_line("merge aborted, restored original state", C_AGENT);
+                } else {
+                    let _ = renderer.write_line(
+                        &format!(
+                            "conflict state left in {} for manual resolution",
+                            info.main_repo_path.display()
+                        ),
+                        C_AGENT,
+                    );
+                }
+            }
+            crate::extras::git_worktree::MergeOutcome::Error(e) => {
+                let _ = renderer.write_line(&format!("merge failed: {}", e), C_ERROR);
+            }
+        }
+    }
+
+    running.store(false, Ordering::Relaxed);
+    if let Some(h) = event_handle.take() {
+        let _ = h.join();
     }
 
     #[cfg(feature = "mcp")]

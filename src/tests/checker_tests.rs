@@ -557,6 +557,38 @@ fn nested_dotdot_traverses_to_root() {
     );
 }
 
+#[test]
+fn relative_dotdot_traversal_is_detected_as_external() {
+    let mut checker = make_checker(SecurityMode::Standard);
+    let traversal = if cfg!(windows) {
+        "..\\..\\..\\etc\\passwd"
+    } else {
+        "../../../etc/passwd"
+    };
+    let result = checker.check_path("read", traversal);
+    assert!(
+        matches!(result, CheckResult::Ask),
+        "expected Ask for relative traversal path, got {:?}",
+        result,
+    );
+}
+
+#[test]
+fn relative_dotdot_in_cwd_stays_allowed() {
+    let mut checker = make_checker(SecurityMode::Standard);
+    let path = if cfg!(windows) {
+        "..\\project\\src\\main.rs"
+    } else {
+        "../project/src/main.rs"
+    };
+    let result = checker.check_path("read", path);
+    assert!(
+        matches!(result, CheckResult::Allowed),
+        "expected Allowed for relative path staying in CWD, got {:?}",
+        result,
+    );
+}
+
 // --- Session allowlist with absolute paths on check_path ---
 
 #[test]
