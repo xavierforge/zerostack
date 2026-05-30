@@ -47,14 +47,15 @@ where
 
     tokio::spawn(async move {
         // Clone prompt and history so they're available for a potential retry
-        // when the model returns an empty response.
+        // when the model returns an empty final response.
         let retry_prompt = prompt.clone();
         let retry_history: Vec<Message> = history.clone();
 
         let mut stream = agent.stream_chat(prompt, history).await;
-        let mut retried = false;
 
         loop {
+            let mut retrying = false;
+
             while let Some(item) = stream.next().await {
                 match item {
                     Ok(MultiTurnStreamItem::StreamAssistantItem(
@@ -104,13 +105,8 @@ where
                         let response_text = res.response();
                         let usage = res.usage();
 
-                        // If the model returned an empty response, retry once by
-                        // appending the original prompt and sending "Please continue."
-                        if response_text.is_empty() && !retried {
-                            retried = true;
-                            let mut new_history = retry_history.clone();
-                            new_history.push(Message::user(retry_prompt.clone()));
-                            stream = agent.stream_chat("Please continue.", new_history).await;
+                        if response_text.is_empty() {
+                            retrying = true;
                             break;
                         }
 
@@ -133,16 +129,20 @@ where
                 }
             }
 
-            // If we exhaust the inner loop without returning and haven't retried,
-            // the stream ended unexpectedly (shouldn't happen with well-behaved streams).
-            if !retried {
-                let _ = event_tx
-                    .send(AgentEvent::Error(CompactString::new(
-                        "Stream ended without final response",
-                    )))
-                    .await;
-                return;
+            if retrying {
+                let mut new_history = retry_history.clone();
+                new_history.push(Message::user(retry_prompt.clone()));
+                new_history.push(Message::assistant(String::new()));
+                stream = agent.stream_chat("Please continue.", new_history).await;
+                continue;
             }
+
+            let _ = event_tx
+                .send(AgentEvent::Error(CompactString::new(
+                    "Stream ended without final response",
+                )))
+                .await;
+            return;
         }
     });
 

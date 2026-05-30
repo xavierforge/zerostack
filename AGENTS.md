@@ -6,3 +6,4 @@ When compiling zerostack:
 
 Always write tests when writing new non-TUI code.
 Always update docs/ files when needed.
+If adding or editing slash commands, edit the slash commands `/` picker in the TUI.
