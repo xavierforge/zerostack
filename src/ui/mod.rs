@@ -222,7 +222,8 @@ pub async fn run_interactive(
 
     #[cfg(feature = "git-worktree")]
     if let Some(name) = &cli.worktree {
-        match crate::extras::git_worktree::create(name) {
+        let wt_base_dir = cli.resolve_wt_base_dir(cfg);
+        match crate::extras::git_worktree::create(name, wt_base_dir.as_deref()) {
             Ok((path, _info)) => {
                 std::env::set_current_dir(&path).ok();
                 session.working_dir = compact_str::CompactString::new(path.to_string_lossy());
@@ -259,7 +260,8 @@ pub async fn run_interactive(
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let name = ts.to_string();
-        match crate::extras::git_worktree::create(&name) {
+        let wt_base_dir = cli.resolve_wt_base_dir(cfg);
+        match crate::extras::git_worktree::create(&name, wt_base_dir.as_deref()) {
             Ok((path, _info)) => {
                 std::env::set_current_dir(&path).ok();
                 session.working_dir = compact_str::CompactString::new(path.to_string_lossy());

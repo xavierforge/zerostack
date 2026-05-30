@@ -75,6 +75,9 @@ pub struct Config {
     #[cfg(feature = "git-worktree")]
     #[serde(skip_serializing_if = "Option::is_none", rename = "wt-auto-merge")]
     pub wt_auto_merge: Option<bool>,
+    #[cfg(feature = "git-worktree")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "wt-base-dir")]
+    pub wt_base_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

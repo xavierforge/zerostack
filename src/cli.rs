@@ -158,6 +158,13 @@ pub struct Cli {
     )]
     pub parallel: bool,
 
+    #[cfg(feature = "git-worktree")]
+    #[arg(
+        long = "wt-base-dir",
+        help = "Base directory for worktrees (default: parent of current repo)"
+    )]
+    pub wt_base_dir: Option<String>,
+
     #[arg(help = "Prompt message(s)")]
     pub message: Vec<String>,
 }
@@ -225,5 +232,13 @@ impl Cli {
     #[cfg(feature = "git-worktree")]
     pub fn resolve_wt_auto_merge(&self, cfg: &config::Config) -> bool {
         self.wt_auto_merge || self.parallel || cfg.wt_auto_merge.unwrap_or(false)
+    }
+
+    #[cfg(feature = "git-worktree")]
+    pub fn resolve_wt_base_dir(&self, cfg: &config::Config) -> Option<std::path::PathBuf> {
+        self.wt_base_dir
+            .clone()
+            .or_else(|| cfg.wt_base_dir.clone())
+            .map(std::path::PathBuf::from)
     }
 }

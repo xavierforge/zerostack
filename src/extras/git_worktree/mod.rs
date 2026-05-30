@@ -77,11 +77,15 @@ pub fn default_branch(repo_path: &Path) -> Option<String> {
     None
 }
 
-pub fn create(name: &str) -> Result<(PathBuf, WorktreeInfo), String> {
-    let target = format!("../{}", name);
+pub fn create(name: &str, base_dir: Option<&Path>) -> Result<(PathBuf, WorktreeInfo), String> {
+    let target = match base_dir {
+        Some(dir) => dir.join(name),
+        None => PathBuf::from(format!("../{}", name)),
+    };
 
     let output = Command::new("git")
-        .args(["worktree", "add", "-b", name, &target])
+        .args(["worktree", "add", "-b", name])
+        .arg(&target)
         .output()
         .map_err(|e| format!("failed to run git: {}", e))?;
 
@@ -90,7 +94,7 @@ pub fn create(name: &str) -> Result<(PathBuf, WorktreeInfo), String> {
         return Err(format!("git worktree add failed: {}", stderr.trim()));
     }
 
-    let wt_path = PathBuf::from(&target)
+    let wt_path = target
         .canonicalize()
         .map_err(|e| format!("failed to resolve worktree path: {}", e))?;
 

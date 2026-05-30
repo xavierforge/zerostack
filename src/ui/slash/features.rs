@@ -88,7 +88,8 @@ async fn handle_worktree(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resu
         return Ok(());
     }
 
-    match crate::extras::git_worktree::create(name) {
+    let wt_base_dir = ctx.cli.resolve_wt_base_dir(ctx.cfg);
+    match crate::extras::git_worktree::create(name, wt_base_dir.as_deref()) {
         Ok((path, _info)) => {
             std::env::set_current_dir(&path)
                 .map_err(|e| anyhow::anyhow!("failed to change directory: {}", e))?;
