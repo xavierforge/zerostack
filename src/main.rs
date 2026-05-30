@@ -123,6 +123,20 @@ async fn main() -> anyhow::Result<()> {
 
     let mut session = session::Session::new(&provider, &model, cfg.resolve_context_window());
 
+    // Resolve input/output token costs from quick models or defaults
+    let qm_map = config::quick_models_map(&cfg);
+    if let Some(qm) = cli.resolve_quick_model(&cfg) {
+        session.input_token_cost = qm.input_token_cost;
+        session.output_token_cost = qm.output_token_cost;
+    } else if let Some(qm) = qm_map
+        .iter()
+        .find(|(_, v)| v.model.as_str() == model && v.provider.as_str() == provider)
+        .map(|(_, v)| v)
+    {
+        session.input_token_cost = qm.input_token_cost;
+        session.output_token_cost = qm.output_token_cost;
+    }
+
     if cli.resume && cli.session.is_none() && !cli.continue_session {
         let sessions = session::storage::find_recent_sessions(10)?;
         if sessions.is_empty() {
