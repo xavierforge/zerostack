@@ -67,15 +67,16 @@ async fn handle_prompt(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result
                         write_ok(ctx.renderer, format!("restored user mode: {}", current));
                     }
                 } else if let Some(mode) = SecurityMode::from_str(mode_str)
-                    && let Some(perm) = ctx.permission {
-                        perm.lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_prompt_mode(mode);
-                        write_ok(
-                            ctx.renderer,
-                            format!("security mode: {} (from prompt)", mode),
-                        );
-                    }
+                    && let Some(perm) = ctx.permission
+                {
+                    perm.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .set_prompt_mode(mode);
+                    write_ok(
+                        ctx.renderer,
+                        format!("security mode: {} (from prompt)", mode),
+                    );
+                }
             }
             ctx.rebuild_agent().await;
             write_ok(ctx.renderer, format!("active prompt: {}", name));

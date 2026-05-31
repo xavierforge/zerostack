@@ -94,7 +94,17 @@ Returns a summary of findings for each prompt."
             let model = client.completion_model(model_name.clone());
             let join_handle = tokio::spawn(async move {
                 let work = async {
-                    let agent = builder::build_explore_agent(model, max_turns).await;
+                    let architecture = with_config(|cfg| {
+                        #[cfg(feature = "archmd")]
+                        {
+                            cfg.architecture.clone()
+                        }
+                        #[cfg(not(feature = "archmd"))]
+                        {
+                            None::<String>
+                        }
+                    });
+                    let agent = builder::build_explore_agent(model, max_turns, architecture).await;
                     agent.run_subagent(&prompt_text, max_turns).await
                 };
                 match tokio::time::timeout(SUBAGENT_TIMEOUT, work).await {

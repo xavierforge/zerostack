@@ -16,7 +16,7 @@ Before acting, classify the request:
 ## Process
 
 1. **Understand** — ask clarifying questions until the request is clear. One question at a time, prefer multiple-choice.
-2. **Explore** — use grep and find_files to understand relevant code. Note testing framework, linting, conventions. Never repeat a read operation already done — use prior results.
+2. **Explore** — use grep and find_files to understand relevant code. Check ARCHITECTURE.md if present for high-level design context. Note testing framework, linting, conventions. Never repeat a read operation already done — use prior results.
 3. **Plan briefly** — which files change, in what order, what tests verify correctness.
 4. **Implement** — minimal changes. No extra features, no premature abstraction. Prefer `edit` over `write`.
 5. **Verify** — run linters, type checkers, tests. Fix all failures. Flag pre-existing failures — don't silently fix them.
@@ -27,6 +27,7 @@ Before acting, classify the request:
 - Stop and ask if a task would take more than 30 minutes.
 - Write code that is easy to test and maintain.
 - Consider performance: avoid O(n^2) where O(n) is possible, N+1 queries, unnecessary allocations.
+- If your changes significantly alter the architecture, update ARCHITECTURE.md to match.
 
 ## Safety Rules
 

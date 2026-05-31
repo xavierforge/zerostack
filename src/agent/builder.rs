@@ -36,6 +36,8 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
         "You respond concisely without showing your reasoning.\n\n"
     };
     let context_agents = context.agents.as_deref().unwrap_or("");
+    #[cfg(feature = "archmd")]
+    let context_architecture = context.architecture.as_deref().unwrap_or("");
     let context_prompt = context.current_prompt.as_deref().unwrap_or("");
     let cwd = std::env::current_dir()
         .ok()
@@ -58,6 +60,14 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
         }
         + if !cwd.is_empty() { 30 + cwd.len() } else { 0 };
 
+    #[cfg(feature = "archmd")]
+    let total_len = total_len
+        + if context.architecture.is_some() {
+            2 + context_architecture.len()
+        } else {
+            0
+        };
+
     #[cfg(feature = "memory")]
     let total_len = total_len
         + context.memory.as_deref().map_or(0, |m| m.len() + 8) // "\n\n---\n\n" + content
@@ -71,6 +81,11 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
     if !context_agents.is_empty() {
         preamble.push_str("\n\n");
         preamble.push_str(context_agents);
+    }
+    #[cfg(feature = "archmd")]
+    if !context_architecture.is_empty() {
+        preamble.push_str("\n\n");
+        preamble.push_str(context_architecture);
     }
     if !context_prompt.is_empty() {
         preamble.push_str("\n\n---\n\n");
@@ -152,12 +167,11 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
         #[cfg(feature = "mcp")]
         if let Some(manager) = &mcp_manager {
             let allow_all = cfg.allow_all_mcp_calls.unwrap_or(false);
-            if allow_all
-                && let Some(ref perm) = permission {
-                    perm.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .set_allow_all_mcp_calls(true);
-                }
+            if allow_all && let Some(ref perm) = permission {
+                perm.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_allow_all_mcp_calls(true);
+            }
             let mcp_tools = manager
                 .collect_tools(permission.clone(), ask_tx.clone())
                 .await;

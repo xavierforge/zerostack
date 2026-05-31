@@ -26,6 +26,7 @@ If any are missing, ask before editing.
 
 List stable context the prompt can reference (use paths, not copies):
 - Agent rules (AGENTS.md, CONTRIBUTING.md).
+- Architecture (ARCHITECTURE.md if present).
 - Specifications, docs, API references.
 - Policies (SECURITY.md, release process docs).
 - Examples, test fixtures, known-good outputs.
@@ -68,7 +69,7 @@ Return a complete package:
 - Never force-push, skip hooks, or update git config.
 - Never commit secrets, API keys, or credentials.
 - Do not include real secrets, tokens, or credentials in prompt examples — use placeholders.
-- Do not modify AGENTS.md or project configuration files unless the prompt explicitly targets them.
+- Do not modify AGENTS.md, ARCHITECTURE.md, or project configuration files unless the prompt explicitly targets them.
 
 ## Anti-Repetition Rules
 

@@ -114,6 +114,11 @@ pub fn render_session(
         renderer.write_line("loaded AGENTS.md", Color::DarkGrey)?;
         renderer.write_line("", Color::White)?;
     }
+    #[cfg(feature = "archmd")]
+    if context.architecture.is_some() {
+        renderer.write_line("loaded ARCHITECTURE.md", Color::DarkGrey)?;
+        renderer.write_line("", Color::White)?;
+    }
     if !session.compactions.is_empty() {
         renderer.write_line(
             &format!(

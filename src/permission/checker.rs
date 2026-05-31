@@ -210,13 +210,14 @@ impl PermissionChecker {
         let mut matched: SmallVec<[Action; 4]> = SmallVec::new();
 
         if self.apply_rules()
-            && let Some(rules) = self.rules.get(tool) {
-                for (pattern, action) in rules {
-                    if pattern.matches(input) {
-                        matched.push(*action);
-                    }
+            && let Some(rules) = self.rules.get(tool)
+        {
+            for (pattern, action) in rules {
+                if pattern.matches(input) {
+                    matched.push(*action);
                 }
             }
+        }
 
         let base = matched.last().copied();
         let action = match self.mode {
@@ -294,13 +295,14 @@ impl PermissionChecker {
         let mut matched: SmallVec<[Action; 4]> = SmallVec::new();
 
         if self.apply_rules()
-            && let Some(rules) = self.rules.get(tool) {
-                for (pattern, action) in rules {
-                    if pattern.matches(&abs_path) || pattern.matches(&expanded) {
-                        matched.push(*action);
-                    }
+            && let Some(rules) = self.rules.get(tool)
+        {
+            for (pattern, action) in rules {
+                if pattern.matches(&abs_path) || pattern.matches(&expanded) {
+                    matched.push(*action);
                 }
             }
+        }
 
         let base = matched.last().copied();
         let action = match self.mode {

@@ -305,6 +305,12 @@ async fn model_for_subagent(
     model: crate::provider::AnyModel,
 ) -> anyhow::Result<()> {
     let max_turns = ctx.cfg.task_max_turns.unwrap_or(15);
-    let _agent = crate::extras::subagents::builder::build_explore_agent(model, max_turns).await;
+    let _agent = crate::extras::subagents::builder::build_explore_agent(
+        model,
+        max_turns,
+        #[cfg(feature = "archmd")]
+        None,
+    )
+    .await;
     Ok(())
 }

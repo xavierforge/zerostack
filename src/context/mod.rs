@@ -62,12 +62,18 @@ pub struct ContextFiles {
     pub current_theme_name: Option<String>,
     #[cfg(feature = "memory")]
     pub memory: Option<String>,
+    #[cfg(feature = "archmd")]
+    pub architecture: Option<String>,
 }
 
 impl ContextFiles {
     #[allow(dead_code)]
     pub fn reload(&mut self) {
         self.agents = load_agents();
+        #[cfg(feature = "archmd")]
+        {
+            self.architecture = load_architecture();
+        }
         self.prompts = prompts::load();
         if let Some(name) = &self.current_prompt_name {
             self.current_prompt = self.prompts.get(name).cloned();
@@ -90,6 +96,12 @@ pub fn load(no_context_files: bool) -> ContextFiles {
     } else {
         load_agents()
     };
+    #[cfg(feature = "archmd")]
+    let architecture = if no_context_files {
+        None
+    } else {
+        load_architecture()
+    };
     let prompt_map = prompts::load();
     let theme_map = themes::load();
     let theme_name = crate::session::storage::load_theme_name();
@@ -104,6 +116,8 @@ pub fn load(no_context_files: bool) -> ContextFiles {
         current_theme_name: theme_name,
         #[cfg(feature = "memory")]
         memory,
+        #[cfg(feature = "archmd")]
+        architecture,
     }
 }
 
@@ -112,6 +126,42 @@ fn load_file(path: &PathBuf) -> Option<String> {
         std::fs::read_to_string(path).ok()
     } else {
         None
+    }
+}
+
+#[cfg(feature = "archmd")]
+pub(crate) fn load_architecture() -> Option<String> {
+    let mut parts: SmallVec<[String; 4]> = SmallVec::new();
+
+    let global = crate::session::storage::architecture_path();
+    if let Some(content) = load_file(&global)
+        && !content.trim().is_empty()
+    {
+        parts.push(format!("# Global ARCHITECTURE.md\n{}", content));
+    }
+
+    let cwd = std::env::current_dir().ok();
+    if let Some(cwd) = cwd {
+        let mut current = Some(cwd.as_path());
+        while let Some(dir) = current {
+            let path = dir.join("ARCHITECTURE.md");
+            if let Some(content) = load_file(&path)
+                && !content.trim().is_empty()
+            {
+                parts.push(format!(
+                    "# ARCHITECTURE.md ({})\n{}",
+                    dir.display(),
+                    content
+                ));
+            }
+            current = dir.parent();
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
     }
 }
 

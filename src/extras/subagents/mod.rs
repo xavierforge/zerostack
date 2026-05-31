@@ -10,6 +10,8 @@ pub(crate) struct SubagentConfig {
     pub client: AnyClient,
     pub model_name: String,
     pub max_turns: usize,
+    #[cfg(feature = "archmd")]
+    pub architecture: Option<String>,
 }
 
 static CONFIG: Mutex<Option<SubagentConfig>> = Mutex::new(None);
@@ -25,12 +27,19 @@ where
     f(cfg)
 }
 
-pub fn init(client: AnyClient, model_name: String, max_turns: usize) {
+pub fn init(
+    client: AnyClient,
+    model_name: String,
+    max_turns: usize,
+    #[cfg(feature = "archmd")] architecture: Option<String>,
+) {
     let mut guard = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(SubagentConfig {
         client,
         model_name,
         max_turns,
+        #[cfg(feature = "archmd")]
+        architecture,
     });
 }
 

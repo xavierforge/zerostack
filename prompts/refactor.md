@@ -36,6 +36,10 @@ Never change what the code does — only how it is organized. Every refactor mus
 - Comments documenting non-obvious design decisions, workarounds, or known issues.
 - Existing test assertions — tests are the safety net.
 
+## Architecture
+
+- If your refactoring significantly alters the codebase architecture, update ARCHITECTURE.md to match.
+
 ## Strategy: Compiler-Driven Refactoring
 
 In statically typed languages, prefer refactors where the compiler verifies correctness:

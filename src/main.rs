@@ -102,20 +102,51 @@ async fn main() -> anyhow::Result<()> {
     let _ = docs::ensure_global();
     let mut context = context::load(cli.resolve_no_context_files(&cfg));
 
+    #[cfg(feature = "archmd")]
+    if !cli.resolve_no_context_files(&cfg) {
+        let cwd = std::env::current_dir().ok();
+        if let Some(ref cwd) = cwd {
+            let _ = crate::extras::archmd::ask_and_create(cwd);
+        }
+    }
+
+    // Reload context after potential ARCHITECTURE.md creation
+    #[cfg(feature = "archmd")]
+    {
+        context.architecture = crate::context::load_architecture();
+    }
+
     let default_prompt = cfg.default_prompt.as_deref().unwrap_or("code");
-    let default_prompt_mode: Option<&str> =
-        if let Some(content) = context.prompts.get(default_prompt) {
-            let (mode_directive, clean_content) = crate::permission::parse_prompt_mode(content);
-            context.current_prompt = Some(if mode_directive.is_some() {
-                clean_content.to_string()
-            } else {
-                content.clone()
-            });
-            context.current_prompt_name = Some(default_prompt.to_string());
-            mode_directive
+    let default_prompt_mode: Option<&str> = if let Some(content) =
+        context.prompts.get(default_prompt)
+    {
+        let (mode_directive, clean_content) = crate::permission::parse_prompt_mode(content);
+        let mut prompt_text = if mode_directive.is_some() {
+            clean_content.to_string()
         } else {
-            None
+            content.clone()
         };
+
+        // Append available capabilities based on enabled features
+        #[allow(unused_mut)]
+        let mut caps: Vec<&str> = Vec::new();
+        #[cfg(feature = "memory")]
+            caps.push("- **Memory**: persistent memory across sessions (memory_read, memory_write, memory_search)");
+        #[cfg(feature = "subagents")]
+            caps.push("- **Subagents**: delegate read-only exploration to parallel subagents via the `task` tool");
+
+        if !caps.is_empty() {
+            prompt_text.push_str("\n\n## Available Capabilities\n\n");
+            prompt_text.push_str(&caps.join("\n"));
+            prompt_text.push('\n');
+        }
+
+        context.current_prompt = Some(prompt_text);
+        context.current_prompt_name = Some(default_prompt.to_string());
+        mode_directive
+    } else {
+        None
+    };
 
     let mut provider = cli.resolve_provider(&cfg);
     let mut model = cli.resolve_model(&cfg);
@@ -234,7 +265,13 @@ async fn main() -> anyhow::Result<()> {
             )?
         };
 
-        crate::extras::subagents::init(sub_client, sub_model.to_string(), task_max_turns);
+        crate::extras::subagents::init(
+            sub_client,
+            sub_model.to_string(),
+            task_max_turns,
+            #[cfg(feature = "archmd")]
+            context.architecture.clone(),
+        );
     }
 
     #[cfg(feature = "acp")]
