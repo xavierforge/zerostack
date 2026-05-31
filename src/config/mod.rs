@@ -45,6 +45,8 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub always_show_welcome: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_providers: Option<HashMap<String, types::CustomProviderConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<serde_json::Value>,
@@ -139,6 +141,10 @@ impl Config {
 
     pub fn resolve_compact_enabled(&self) -> bool {
         self.compact_enabled.unwrap_or(true)
+    }
+
+    pub fn resolve_always_show_welcome(&self) -> bool {
+        self.always_show_welcome.unwrap_or(false)
     }
 
     pub fn build_permission_config(&self) -> PermissionConfigs {

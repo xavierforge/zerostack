@@ -238,7 +238,7 @@ pub async fn run_interactive(
 
     render_session(&mut renderer, session, cli, cfg, context)?;
     let marker_path = crate::session::storage::data_dir().join("shown_welcome_msg");
-    if !marker_path.exists() {
+    if cfg.resolve_always_show_welcome() || !marker_path.exists() {
         renderer.write_line("──────────────────────────────────────────", Color::Cyan)?;
         renderer.write_line("  zerostack Quickstart", Color::Cyan)?;
         renderer.write_line("──────────────────────────────────────────", Color::Cyan)?;
@@ -282,10 +282,12 @@ pub async fn run_interactive(
         renderer.write_line("", Color::White)?;
         renderer.write_line("──────────────────────────────────────────", Color::Cyan)?;
         renderer.write_line("", Color::White)?;
-        if let Some(dir) = marker_path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        if !cfg.resolve_always_show_welcome() {
+            if let Some(dir) = marker_path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&marker_path, "");
         }
-        let _ = std::fs::write(&marker_path, "");
     }
     refresh_display(
         &mut renderer,
