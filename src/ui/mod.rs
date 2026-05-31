@@ -224,6 +224,7 @@ pub async fn run_interactive(
     let mut btw_input_tokens: u64 = 0;
     let mut btw_output_tokens: u64 = 0;
     let mut btw_cost: f64 = 0.0;
+    let mut dot_prompt_restore: Option<String> = None;
 
     let perm_mode = || -> Option<String> {
         permission.as_ref().map(|p| {
@@ -473,7 +474,7 @@ pub async fn run_interactive(
                             continue;
                         }
 
-                        if let Some(text) = input.handle_key(key) {
+                        if let Some(mut text) = input.handle_key(key) {
                             #[cfg(feature = "loop")]
                             if loop_state.as_ref().is_some_and(|ls| ls.active) && !text.starts_with('/') {
                                 renderer.write_line("loop active: /loop stop to cancel", C_ERROR)?;
@@ -483,6 +484,87 @@ pub async fn run_interactive(
                             if renderer.is_scrolling() {
                                 renderer.scroll_to_bottom()?;
                             }
+                            let mut is_dot_cmd = false;
+                            if text.starts_with('.') {
+                                is_dot_cmd = true;
+                                let after_dot = text[1..].trim_start();
+
+                                for line in text.lines() {
+                                    let safe_line = sanitize_output(line);
+                                    renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
+                                }
+                                renderer.write_line("", Color::White)?;
+
+                                if after_dot.is_empty() {
+                                    input.start_prompt_picker();
+                                } else if let Some((prompt_name, msg)) = after_dot.split_once(char::is_whitespace) {
+                                    let prompt_name = prompt_name.trim();
+                                    let msg = msg.trim();
+                                    if !prompt_name.is_empty() && context.prompts.contains_key(prompt_name) {
+                                        dot_prompt_restore = context.current_prompt_name.clone();
+                                        if let Some(content) = context.prompts.get(prompt_name).cloned() {
+                                            let (mode_directive_str, clean_content) = crate::permission::parse_prompt_mode(&content);
+                                            let mode_directive = mode_directive_str.map(|s| s.to_string());
+                                            context.current_prompt = Some(if mode_directive.is_some() {
+                                                clean_content.to_string()
+                                            } else {
+                                                content
+                                            });
+                                            context.current_prompt_name = Some(prompt_name.to_string());
+                                            if let Some(ref mode_str) = mode_directive {
+                                                if let Some(perm) = &permission {
+                                                    let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                                    if mode_str == "last_user_mode" {
+                                                        guard.restore_user_mode();
+                                                    } else if let Some(mode) = crate::permission::SecurityMode::from_str(mode_str) {
+                                                        guard.set_prompt_mode(mode);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        text = msg.to_string().into();
+                                        is_dot_cmd = false;
+                                    } else {
+                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), C_ERROR)?;
+                                    }
+                                } else {
+                                    let prompt_name = after_dot.trim();
+                                    if context.prompts.contains_key(prompt_name) {
+                                        if let Some(content) = context.prompts.get(prompt_name).cloned() {
+                                            let (mode_directive_str, clean_content) = crate::permission::parse_prompt_mode(&content);
+                                            let mode_directive = mode_directive_str.map(|s| s.to_string());
+                                            context.current_prompt = Some(if mode_directive.is_some() {
+                                                clean_content.to_string()
+                                            } else {
+                                                content
+                                            });
+                                            context.current_prompt_name = Some(prompt_name.to_string());
+                                            if let Some(ref mode_str) = mode_directive {
+                                                if let Some(perm) = &permission {
+                                                    let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                                    if mode_str == "last_user_mode" {
+                                                        guard.restore_user_mode();
+                                                    } else if let Some(mode) = crate::permission::SecurityMode::from_str(mode_str) {
+                                                        guard.set_prompt_mode(mode);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        renderer.write_line(&format!("switched to prompt '{}'", prompt_name), C_AGENT)?;
+                                        if !cli.no_session
+                                            && let Err(e) = crate::session::storage::save_session(session)
+                                        {
+                                            renderer.write_line(
+                                                &format!("warning: failed to save session: {}", e),
+                                                C_ERROR,
+                                            )?;
+                                        }
+                                    } else {
+                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), C_ERROR)?;
+                                    }
+                                }
+                            }
+                            if !is_dot_cmd {
                             if text.starts_with('/') {
                                 for line in text.lines() {
                                     let safe_line = sanitize_output(line);
@@ -754,6 +836,7 @@ pub async fn run_interactive(
                                     );
                                 }
                             }
+                            }
                             refresh_display(&mut renderer, &input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref())?;
                         } else if is_running {
                             refresh_display(&mut renderer, &input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref())?;
@@ -794,6 +877,20 @@ pub async fn run_interactive(
                         let _ = crate::session::storage::save_session(session);
                     }
                     btw_active = false;
+                }
+                if !is_running
+                    && let Some(restore_name) = dot_prompt_restore.take()
+                {
+                    context.current_prompt = context.prompts.get(&restore_name).cloned();
+                    context.current_prompt_name = if context.current_prompt.is_some() {
+                        Some(restore_name)
+                    } else {
+                        None
+                    };
+                    if let Some(perm) = &permission {
+                        let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.restore_user_mode();
+                    }
                 }
                 refresh_display(&mut renderer, &input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref())?;
             }
