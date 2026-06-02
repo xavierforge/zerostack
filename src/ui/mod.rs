@@ -1006,7 +1006,6 @@ pub async fn run_interactive(
                                                    d. WAIT for the user's response before continuing.\n\
                                                    e. Follow their instruction.\n\n\
                                                  6. If the merge succeeded (or conflicts were resolved):\n\
-                                                   - git push\n\
                                                    - git worktree remove {wt_remove_flag} {wt_path}\n\
                                                    - git branch -D {branch}\n\n\
                                                  7. cd {main_path} and report completion.\n\n\

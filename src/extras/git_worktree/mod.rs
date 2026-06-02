@@ -274,7 +274,6 @@ fn complete_merge_with_force(state: &MergeState, force: bool) -> Result<(), Stri
     let _ = std::env::set_current_dir(&state.info.main_repo_path);
 
     let result = (|| {
-        run_git(["push"])?;
         if force {
             run_git([
                 "worktree",
