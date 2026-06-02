@@ -1,8 +1,8 @@
-mod add;
+pub(crate) mod add;
 mod content;
 mod features;
 mod help;
-mod init;
+pub(crate) mod init;
 mod memory;
 mod providers;
 mod session;

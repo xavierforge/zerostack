@@ -490,7 +490,7 @@ impl AnyAgent {
 /// Expands a value that is exactly "${VAR}" to the environment variable's value;
 /// any other format is returned as-is. Only whole-string `${VAR}` is supported
 /// (the common, safe case) rather than arbitrary interpolation.
-fn expand_env(value: &str) -> anyhow::Result<String> {
+pub(crate) fn expand_env(value: &str) -> anyhow::Result<String> {
     if let Some(var) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
         std::env::var(var).map_err(|_| {
             anyhow::anyhow!(
@@ -550,7 +550,10 @@ pub(crate) fn build_http_client(
 /// if `api_style` is set explicitly, honor it; otherwise default to Completions
 /// when a base_url is present (i.e. a compatible gateway) and Responses when it
 /// is absent (i.e. real api.openai.com).
-fn resolve_api_style(base_url: Option<&str>, custom: Option<&CustomProviderConfig>) -> ApiStyle {
+pub(crate) fn resolve_api_style(
+    base_url: Option<&str>,
+    custom: Option<&CustomProviderConfig>,
+) -> ApiStyle {
     custom.and_then(|c| c.api_style).unwrap_or({
         if base_url.is_some() {
             ApiStyle::Completions
@@ -805,70 +808,5 @@ pub async fn build_agent(
             )
             .await,
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{ApiStyle, CustomProviderConfig};
-
-    fn cfg(api_style: Option<ApiStyle>) -> CustomProviderConfig {
-        CustomProviderConfig {
-            provider_type: "openai".into(),
-            base_url: "https://gw.example/v1".to_string(),
-            api_key_env: None,
-            danger_accept_invalid_certs: None,
-            api_style,
-            headers: std::collections::HashMap::new(),
-            timeout_secs: None,
-            model: None,
-        }
-    }
-
-    #[test]
-    fn defaults_to_responses_without_base_url() {
-        assert_eq!(resolve_api_style(None, None), ApiStyle::Responses);
-    }
-
-    #[test]
-    fn defaults_to_completions_with_base_url() {
-        assert_eq!(
-            resolve_api_style(Some("https://gw.example/v1"), None),
-            ApiStyle::Completions
-        );
-    }
-
-    #[test]
-    fn explicit_style_overrides_base_url_heuristic() {
-        let c = cfg(Some(ApiStyle::Responses));
-        assert_eq!(
-            resolve_api_style(Some("https://gw.example/v1"), Some(&c)),
-            ApiStyle::Responses
-        );
-    }
-
-    #[test]
-    fn explicit_completions_overrides_no_base_url() {
-        let c = cfg(Some(ApiStyle::Completions));
-        assert_eq!(resolve_api_style(None, Some(&c)), ApiStyle::Completions);
-    }
-
-    #[test]
-    fn expand_env_passthrough() {
-        assert_eq!(expand_env("Bearer abc").unwrap(), "Bearer abc");
-    }
-
-    #[test]
-    fn expand_env_reads_var() {
-        // SAFETY: test-only; set and removed within a single test
-        unsafe { std::env::set_var("ZS_TEST_HDR", "secret-value") };
-        assert_eq!(expand_env("${ZS_TEST_HDR}").unwrap(), "secret-value");
-        unsafe { std::env::remove_var("ZS_TEST_HDR") };
-    }
-
-    #[test]
-    fn expand_env_missing_var_errors() {
-        assert!(expand_env("${ZS_DEFINITELY_NOT_SET_98237}").is_err());
     }
 }

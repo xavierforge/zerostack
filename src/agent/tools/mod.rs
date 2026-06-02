@@ -4,7 +4,7 @@ pub(crate) mod edit;
 mod find_files;
 mod grep;
 mod list_dir;
-mod normalize;
+pub(crate) mod normalize;
 pub(crate) mod read;
 pub(crate) mod todo;
 mod write;

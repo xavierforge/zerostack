@@ -1,11 +1,11 @@
 mod event_handler;
 pub(crate) mod events;
 pub(crate) mod input;
-mod markdown;
+pub(crate) mod markdown;
 mod permission_handler;
 pub(crate) mod pickers;
 pub(crate) mod renderer;
-mod slash;
+pub(crate) mod slash;
 mod status;
 mod terminal;
 pub(crate) mod utils;

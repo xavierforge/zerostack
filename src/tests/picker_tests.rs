@@ -1,4 +1,5 @@
 use crate::ui::pickers::file::FilePicker;
+use crate::ui::pickers::list::ListPicker;
 use crate::ui::pickers::models::ModelsPicker;
 use std::path::PathBuf;
 
@@ -203,4 +204,97 @@ fn test_emoji_handling() {
     picker.backspace();
     assert_eq!(picker.query, "");
     assert_eq!(picker.cursor, 0);
+}
+
+// ── ListPicker tests ───────────────────────────────────────────────
+
+#[test]
+fn test_list_picker_filter() {
+    let mut picker = ListPicker::new();
+    picker.set_items(vec![
+        "alpha".to_string(),
+        "beta".to_string(),
+        "gamma".to_string(),
+    ]);
+    picker.activate();
+    assert_eq!(picker.matches.len(), 3);
+
+    picker.char_input('a');
+    assert_eq!(picker.matches, vec!["alpha", "beta", "gamma"]);
+
+    picker.char_input('l');
+    assert_eq!(picker.matches, vec!["alpha"]);
+}
+
+#[test]
+fn test_list_picker_navigation() {
+    let mut picker = ListPicker::new();
+    picker.set_items(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    picker.activate();
+    assert_eq!(picker.selected, 0);
+
+    picker.select_next();
+    assert_eq!(picker.selected, 1);
+
+    picker.select_prev();
+    assert_eq!(picker.selected, 0);
+
+    picker.select_prev();
+    assert_eq!(picker.selected, 2);
+}
+
+#[test]
+fn test_list_picker_backspace_and_char_unicode() {
+    let mut picker = ListPicker::new();
+    picker.set_items(vec!["test".to_string()]);
+
+    picker.char_input('é');
+    assert_eq!(picker.query, "é");
+    assert_eq!(picker.cursor, 1);
+
+    picker.char_input('ñ');
+    assert_eq!(picker.query, "éñ");
+    assert_eq!(picker.cursor, 2);
+
+    picker.backspace();
+    assert_eq!(picker.query, "é");
+    assert_eq!(picker.cursor, 1);
+
+    picker.backspace();
+    assert_eq!(picker.query, "");
+    assert_eq!(picker.cursor, 0);
+
+    picker.backspace();
+    assert_eq!(picker.query, "");
+    assert_eq!(picker.cursor, 0);
+}
+
+#[test]
+fn test_list_picker_reactivate_resets_state() {
+    let mut picker = ListPicker::new();
+    picker.set_items(vec!["a".to_string(), "b".to_string()]);
+    picker.char_input('a');
+    picker.char_input('b');
+    assert_eq!(picker.query, "ab");
+
+    picker.deactivate();
+    assert!(!picker.active);
+
+    picker.activate();
+    assert!(picker.active);
+    assert_eq!(picker.query, "");
+    assert_eq!(picker.cursor, 0);
+    assert_eq!(picker.selected, 0);
+}
+
+#[test]
+fn test_static_commands_prepopulated() {
+    let mut picker = ListPicker::with_static_commands();
+    picker.activate();
+    assert!(picker.matches.len() > 5);
+
+    picker.char_input('m');
+    picker.char_input('o');
+    picker.char_input('d');
+    assert!(picker.matches.contains(&"/model".to_string()));
 }
