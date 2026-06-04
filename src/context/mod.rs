@@ -68,19 +68,17 @@ pub struct ContextFiles {
 }
 
 impl ContextFiles {
-    #[allow(dead_code)]
     pub fn reload(&mut self) {
-        self.agents = load_agents();
+        self.agents = walk_context_files().0;
         #[cfg(feature = "archmd")]
         {
-            self.architecture = load_architecture();
+            self.architecture = walk_context_files().1;
         }
         self.prompts = prompts::load();
         if let Some(name) = &self.current_prompt_name {
             self.current_prompt = self.prompts.get(name).cloned();
         }
         self.themes = themes::load();
-        // Reload persisted theme name from disk
         self.current_theme_name = crate::session::storage::load_theme_name();
         #[cfg(feature = "memory")]
         {
@@ -193,10 +191,6 @@ fn walk_context_files() -> (Option<String>, Option<String>) {
         Some(arch_parts.join("\n\n"))
     };
     (agents, architecture)
-}
-
-fn load_agents() -> Option<String> {
-    walk_context_files().0
 }
 
 #[cfg(feature = "archmd")]

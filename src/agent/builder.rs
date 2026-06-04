@@ -1,7 +1,5 @@
-use compact_str::CompactString;
 use rig::agent::{Agent, AgentBuilder};
 use rig::completion::CompletionModel;
-use rig::providers::openrouter;
 use smallvec::SmallVec;
 
 use crate::agent::prompt::{SYSTEM_PROMPT, TODO_TOOLS_PROMPT};
@@ -14,9 +12,6 @@ use crate::extras::mcp::McpClientManager;
 use crate::permission::ask::AskSender;
 use crate::permission::checker::PermCheck;
 use crate::sandbox::Sandbox;
-
-#[allow(dead_code)]
-pub type ZAgent = Agent<openrouter::CompletionModel>;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn build_agent_inner<M: CompletionModel + 'static>(
@@ -332,21 +327,4 @@ pub fn build_btw_agent_inner<M: CompletionModel + 'static>(
     }
 
     builder.build()
-}
-
-#[allow(dead_code)]
-pub fn create_client(api_key: Option<&str>) -> anyhow::Result<openrouter::Client> {
-    let key = api_key
-        .map(CompactString::new)
-        .or_else(|| {
-            std::env::var("OPENROUTER_API_KEY")
-                .ok()
-                .map(CompactString::new)
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No API key found. Set OPENROUTER_API_KEY environment variable or pass --api-key."
-            )
-        })?;
-    Ok(openrouter::Client::new(String::from(key))?)
 }

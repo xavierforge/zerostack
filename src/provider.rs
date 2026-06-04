@@ -120,6 +120,7 @@ fn resolve_base_url(config: &ProviderConfig) -> Option<String> {
 ///
 /// The two cannot share a single type, so we wrap them in an inner enum and let
 /// `ApiStyle` decide which one to build.
+#[derive(Clone)]
 pub enum OpenAiClient {
     Responses(openai::Client),
     Completions(openai::CompletionsClient),
@@ -139,33 +140,13 @@ pub enum OpenAiModel {
     Completions(openai::completion::CompletionModel),
 }
 
-impl Clone for OpenAiClient {
-    fn clone(&self) -> Self {
-        match self {
-            OpenAiClient::Responses(c) => OpenAiClient::Responses(c.clone()),
-            OpenAiClient::Completions(c) => OpenAiClient::Completions(c.clone()),
-        }
-    }
-}
-
-impl Clone for AnyClient {
-    fn clone(&self) -> Self {
-        match self {
-            AnyClient::OpenRouter(c) => AnyClient::OpenRouter(c.clone()),
-            AnyClient::OpenAI(c) => AnyClient::OpenAI(c.clone()),
-            AnyClient::Anthropic(c) => AnyClient::Anthropic(c.clone()),
-            AnyClient::Gemini(c) => AnyClient::Gemini(c.clone()),
-            AnyClient::Ollama(c) => AnyClient::Ollama(c.clone()),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub enum OpenAiAgent {
     Responses(Agent<openai::responses_api::ResponsesCompletionModel>),
     Completions(Agent<openai::completion::CompletionModel>),
 }
 
+#[derive(Clone)]
 pub enum AnyClient {
     OpenRouter(openrouter::Client),
     OpenAI(OpenAiClient),
@@ -659,37 +640,36 @@ pub fn create_client(
     }
 }
 
+macro_rules! build_provider_client {
+    ($client_ty:ty, $variant:ident, $key_expr:expr, $base_url:expr) => {{
+        let key = $key_expr;
+        let builder = match $base_url {
+            Some(u) => <$client_ty>::builder().api_key(key).base_url(u),
+            None => <$client_ty>::builder().api_key(key),
+        };
+        Ok(AnyClient::$variant(builder.build()?))
+    }};
+}
+
 fn build_anthropic_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
-    let builder = match base_url {
-        Some(u) => anthropic::Client::builder().api_key(key).base_url(u),
-        None => anthropic::Client::builder().api_key(key),
-    };
-    Ok(AnyClient::Anthropic(builder.build()?))
+    build_provider_client!(anthropic::Client, Anthropic, key, base_url)
 }
 
 fn build_gemini_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
-    let builder = match base_url {
-        Some(u) => gemini::Client::builder().api_key(key).base_url(u),
-        None => gemini::Client::builder().api_key(key),
-    };
-    Ok(AnyClient::Gemini(builder.build()?))
+    build_provider_client!(gemini::Client, Gemini, key, base_url)
 }
 
 fn build_ollama_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
-    let ollama_key: ollama::OllamaApiKey = key.into();
-    let builder = match base_url {
-        Some(u) => ollama::Client::builder().api_key(ollama_key).base_url(u),
-        None => ollama::Client::builder().api_key(ollama_key),
-    };
-    Ok(AnyClient::Ollama(builder.build()?))
+    build_provider_client!(
+        ollama::Client,
+        Ollama,
+        ollama::OllamaApiKey::from(key),
+        base_url
+    )
 }
 
 fn build_openrouter_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
-    let builder = match base_url {
-        Some(u) => openrouter::Client::builder().api_key(key).base_url(u),
-        None => openrouter::Client::builder().api_key(key),
-    };
-    Ok(AnyClient::OpenRouter(builder.build()?))
+    build_provider_client!(openrouter::Client, OpenRouter, key, base_url)
 }
 
 /// Builds an OpenAiModel (Responses / Completions) into the matching OpenAiAgent.

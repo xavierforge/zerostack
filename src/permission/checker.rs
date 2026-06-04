@@ -201,72 +201,85 @@ impl PermissionChecker {
         matches!(tool, "read" | "grep" | "find_files" | "list_dir")
     }
 
-    pub fn check(&mut self, tool: &str, input: &str) -> CheckResult {
-        if tool == "write_todo_list" {
-            return CheckResult::Allowed;
-        }
-
-        if self.allow_all_mcp_calls && tool == "mcp_tool" {
-            return CheckResult::Allowed;
-        }
-
-        if self.is_session_allowed(tool, input) {
-            return CheckResult::Allowed;
-        }
-
-        let mut matched: SmallVec<[Action; 4]> = SmallVec::new();
-
-        if self.apply_rules()
-            && let Some(rules) = self.rules.get(tool)
-        {
-            for (pattern, action) in rules {
-                if pattern.matches(input) {
-                    matched.push(*action);
-                }
-            }
-        }
-
+    fn resolve_check_action(&self, tool: &str, matched: &SmallVec<[Action; 4]>) -> Action {
         let base = matched.last().copied();
-        let action = match self.mode {
-            SecurityMode::Restrictive => {
-                if let Some(a) = base {
-                    a
-                } else {
-                    Action::Ask
-                }
-            }
-            SecurityMode::ReadOnly => {
-                if let Some(a) = base {
-                    a
-                } else if self.is_read_tool(tool) {
+        match self.mode {
+            SecurityMode::Restrictive => base.unwrap_or(Action::Ask),
+            SecurityMode::ReadOnly => base.unwrap_or_else(|| {
+                if self.is_read_tool(tool) {
                     Action::Allow
                 } else {
                     Action::Deny
                 }
-            }
-            SecurityMode::Guarded => {
-                if let Some(a) = base {
-                    a
-                } else if self.is_read_tool(tool) {
+            }),
+            SecurityMode::Guarded => base.unwrap_or_else(|| {
+                if self.is_read_tool(tool) {
                     Action::Allow
                 } else {
                     Action::Ask
                 }
-            }
+            }),
             SecurityMode::Standard => base.unwrap_or(self.default_action),
             SecurityMode::Yolo => match base {
                 Some(Action::Deny) => Action::Deny,
                 Some(other) => other,
                 None => Action::Allow,
             },
-        };
+        }
+    }
 
+    fn resolve_path_action(
+        &self,
+        tool: &str,
+        matched: &SmallVec<[Action; 4]>,
+        abs_path: &str,
+    ) -> Action {
+        let base = matched.last().copied();
+        match self.mode {
+            SecurityMode::Restrictive => base.unwrap_or(Action::Ask),
+            SecurityMode::ReadOnly => base.unwrap_or_else(|| {
+                if self.is_read_tool(tool) {
+                    Action::Allow
+                } else {
+                    Action::Deny
+                }
+            }),
+            SecurityMode::Guarded => base.unwrap_or_else(|| {
+                if self.is_read_tool(tool) {
+                    Action::Allow
+                } else {
+                    Action::Ask
+                }
+            }),
+            SecurityMode::Standard => {
+                let a = base.unwrap_or(self.default_action);
+                if matched.is_empty() && self.is_path_tool(tool) && !self.is_external_path(abs_path)
+                {
+                    Action::Allow
+                } else if matched.is_empty()
+                    && a == Action::Allow
+                    && self.is_external_path(abs_path)
+                {
+                    self.match_ext_dir(abs_path).unwrap_or(Action::Ask)
+                } else {
+                    a
+                }
+            }
+            SecurityMode::Yolo => match base {
+                Some(Action::Deny) => Action::Deny,
+                Some(other) => other,
+                None => Action::Allow,
+            },
+        }
+    }
+
+    fn doom_loop_check(&mut self, tool: &str, doom_key: &str, action: Action) -> CheckResult {
         if action != Action::Deny {
-            self.track_doom_loop(tool, input);
-            if self.is_doom_loop(tool, input) {
+            self.track_doom_loop(tool, doom_key);
+            if self.is_doom_loop(tool, doom_key) {
                 if action == Action::Allow {
-                    let count = self.count_doom_loop(tool, input);
-                    return CheckResult::allowed_with_coaching(tool, input, count);
+                    let count = self.count_doom_loop(tool, doom_key);
+                    return CheckResult::allowed_with_coaching(tool, doom_key, count);
                 }
                 match self.doom_loop_action {
                     Action::Deny => {
@@ -279,12 +292,37 @@ impl PermissionChecker {
                 }
             }
         }
-
         match action {
             Action::Allow => CheckResult::Allowed,
             Action::Ask => CheckResult::Ask,
             Action::Deny => CheckResult::Denied("Blocked by permission rules".to_string()),
         }
+    }
+
+    pub fn check(&mut self, tool: &str, input: &str) -> CheckResult {
+        if tool == "write_todo_list" {
+            return CheckResult::Allowed;
+        }
+        if self.allow_all_mcp_calls && tool == "mcp_tool" {
+            return CheckResult::Allowed;
+        }
+        if self.is_session_allowed(tool, input) {
+            return CheckResult::Allowed;
+        }
+
+        let mut matched: SmallVec<[Action; 4]> = SmallVec::new();
+        if self.apply_rules()
+            && let Some(rules) = self.rules.get(tool)
+        {
+            for (pattern, action) in rules {
+                if pattern.matches(input) {
+                    matched.push(*action);
+                }
+            }
+        }
+
+        let action = self.resolve_check_action(tool, &matched);
+        self.doom_loop_check(tool, input, action)
     }
 
     pub fn check_path(&mut self, tool: &str, path: &str) -> CheckResult {
@@ -300,7 +338,6 @@ impl PermissionChecker {
         }
 
         let mut matched: SmallVec<[Action; 4]> = SmallVec::new();
-
         if self.apply_rules()
             && let Some(rules) = self.rules.get(tool)
         {
@@ -311,82 +348,8 @@ impl PermissionChecker {
             }
         }
 
-        let base = matched.last().copied();
-        let action = match self.mode {
-            SecurityMode::Restrictive => {
-                if let Some(a) = base {
-                    a
-                } else {
-                    Action::Ask
-                }
-            }
-            SecurityMode::ReadOnly => {
-                if let Some(a) = base {
-                    a
-                } else if self.is_read_tool(tool) {
-                    Action::Allow
-                } else {
-                    Action::Deny
-                }
-            }
-            SecurityMode::Guarded => {
-                if let Some(a) = base {
-                    a
-                } else if self.is_read_tool(tool) {
-                    Action::Allow
-                } else {
-                    Action::Ask
-                }
-            }
-            SecurityMode::Standard => {
-                let a = base.unwrap_or(self.default_action);
-                // In Standard mode, if no rule matched, auto-allow path
-                // tools within CWD.
-                if matched.is_empty()
-                    && self.is_path_tool(tool)
-                    && !self.is_external_path(&abs_path)
-                {
-                    Action::Allow
-                } else if matched.is_empty()
-                    && a == Action::Allow
-                    && self.is_external_path(&abs_path)
-                {
-                    self.match_ext_dir(&abs_path).unwrap_or(Action::Ask)
-                } else {
-                    a
-                }
-            }
-            SecurityMode::Yolo => match base {
-                Some(Action::Deny) => Action::Deny,
-                Some(other) => other,
-                None => Action::Allow,
-            },
-        };
-
-        if action != Action::Deny {
-            self.track_doom_loop(tool, &expanded);
-            if self.is_doom_loop(tool, &expanded) {
-                if action == Action::Allow {
-                    let count = self.count_doom_loop(tool, &expanded);
-                    return CheckResult::allowed_with_coaching(tool, &expanded, count);
-                }
-                match self.doom_loop_action {
-                    Action::Deny => {
-                        return CheckResult::Denied(
-                            "Doom loop: repeated identical tool call".to_string(),
-                        );
-                    }
-                    Action::Ask => return CheckResult::Ask,
-                    Action::Allow => {}
-                }
-            }
-        }
-
-        match action {
-            Action::Allow => CheckResult::Allowed,
-            Action::Ask => CheckResult::Ask,
-            Action::Deny => CheckResult::Denied("Blocked by permission rules".to_string()),
-        }
+        let action = self.resolve_path_action(tool, &matched, &abs_path);
+        self.doom_loop_check(tool, &expanded, action)
     }
 
     fn is_session_allowed(&self, tool: &str, input: &str) -> bool {
@@ -423,14 +386,6 @@ impl PermissionChecker {
                 }
             }
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn allowlist_entries(&self) -> Vec<(String, String)> {
-        self.session_allowlist
-            .iter()
-            .map(|(t, p)| (t.clone(), p.original.clone()))
-            .collect()
     }
 
     pub fn set_mode(&mut self, mode: SecurityMode) {

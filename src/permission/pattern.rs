@@ -27,7 +27,7 @@ impl Pattern {
 
     pub fn matches(&self, input: &str) -> bool {
         let regex = self.regex.get_or_init(|| {
-            let expanded = expand_home(&self.original);
+            let expanded = crate::fs::expand_tilde(&self.original);
             let regex_str = if self.is_regex {
                 expanded
             } else {
@@ -37,27 +37,6 @@ impl Pattern {
         });
         regex.is_match(input)
     }
-}
-
-fn expand_home(pattern: &str) -> String {
-    if pattern == "~" || pattern == "$HOME" {
-        if let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().to_string();
-        }
-        return pattern.to_string();
-    }
-    if let Some(rest) = pattern.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return format!("{}/{}", home.to_string_lossy(), rest);
-        }
-        return pattern.to_string();
-    }
-    if let Some(rest) = pattern.strip_prefix("$HOME/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return format!("{}/{}", home.to_string_lossy(), rest);
-    }
-    pattern.to_string()
 }
 
 fn glob_to_regex(pattern: &str) -> String {

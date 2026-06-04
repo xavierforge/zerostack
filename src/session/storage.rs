@@ -40,14 +40,6 @@ pub fn save_session(session: &Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn load_session(id: &str) -> anyhow::Result<Session> {
-    let dir = session_dir();
-    let path = dir.join(format!("{}.json", id));
-    let json = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&json)?)
-}
-
 pub fn delete_session(id: &str) -> anyhow::Result<()> {
     let dir = session_dir();
     let path = dir.join(format!("{}.json", id));
