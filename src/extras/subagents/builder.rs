@@ -20,11 +20,22 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
         preamble.push_str(arch);
     }
 
+    // Subagents use the same built-in defaults as the main agent's
+    // `resolve_*` methods (2000 lines, 200 results, no list_dir cap) so a
+    // user who hasn't customized config sees identical subagent behaviour.
+    // Plumbing the user's resolved config through to subagents could be a
+    // future change if local-LLM operators want their tight limits to
+    // apply to subagent calls too.
     let tools: Vec<Box<dyn rig::tool::ToolDyn>> = vec![
-        Box::new(tools::ReadTool::new(None, None, Some(max_text_file_size))),
-        Box::new(tools::GrepTool::new(None, None)),
-        Box::new(tools::FindFilesTool::new(None, None)),
-        Box::new(tools::ListDirTool::new(None, None)),
+        Box::new(tools::ReadTool::new(
+            None,
+            None,
+            Some(max_text_file_size),
+            2000,
+        )),
+        Box::new(tools::GrepTool::new(None, None, 200)),
+        Box::new(tools::FindFilesTool::new(None, None, 200)),
+        Box::new(tools::ListDirTool::new(None, None, None)),
         #[cfg(feature = "memory")]
         Box::new(crate::extras::memory::MemoryRead::new(None, None)),
         #[cfg(feature = "memory")]

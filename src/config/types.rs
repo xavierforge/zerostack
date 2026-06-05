@@ -3,6 +3,30 @@ use std::collections::HashMap;
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+/// A sidecar config file holding only tool output limits. Loaded from
+/// `local-limits-config.toml` next to the main config and merged on top
+/// of it field-by-field. Intended as a convenience for local-LLM users
+/// who run with tight context windows and want to swap in a tighter set
+/// of limits without editing their main config.
+///
+/// `deny_unknown_fields` is intentional: putting anything other than the
+/// five limit fields in this file is a parse error, so the file's purpose
+/// stays machine-checked rather than convention-only.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalLimitsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_read_lines: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bash_output_lines: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_grep_results: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_find_results: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_list_dir_entries: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickModelConfig {
     pub provider: CompactString,

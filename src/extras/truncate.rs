@@ -13,3 +13,16 @@ pub(crate) fn truncate_cjk(s: &str, max: usize, marker: &str) -> String {
     out.push_str(marker);
     out
 }
+
+/// Keep the first `max` lines of `s`. Returns `(head, total_lines)` where
+/// `total_lines` is the original line count. If `total_lines <= max`, `head`
+/// equals `s` (no truncation needed). Callers should append a tool-specific
+/// recovery hint when truncation occurred.
+pub(crate) fn head_lines(s: &str, max: usize) -> (String, usize) {
+    let total = s.lines().count();
+    if total <= max {
+        return (s.to_string(), total);
+    }
+    let head: String = s.lines().take(max).collect::<Vec<_>>().join("\n");
+    (head, total)
+}

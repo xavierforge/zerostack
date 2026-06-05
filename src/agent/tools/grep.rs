@@ -4,17 +4,26 @@ use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 
 use crate::agent::tools::{
-    AskSender, GrepArgs, MAX_GREP_RESULTS, PermCheck, ToolError, check_perm, is_skip_dir,
+    AskSender, GrepArgs, PermCheck, ToolError, check_perm, is_skip_dir,
 };
 
 pub struct GrepTool {
     pub permission: Option<PermCheck>,
     pub ask_tx: Option<AskSender>,
+    pub max_results: u64,
 }
 
 impl GrepTool {
-    pub fn new(permission: Option<PermCheck>, ask_tx: Option<AskSender>) -> Self {
-        GrepTool { permission, ask_tx }
+    pub fn new(
+        permission: Option<PermCheck>,
+        ask_tx: Option<AskSender>,
+        max_results: u64,
+    ) -> Self {
+        GrepTool {
+            permission,
+            ask_tx,
+            max_results,
+        }
     }
 
     fn glob_to_regex(glob: &str) -> String {
@@ -103,15 +112,16 @@ impl Tool for GrepTool {
             })
             .build();
 
+        let max_results = self.max_results as usize;
         let mut file_count = 0;
         let mut files_with_matches: usize = 0;
-        let mut all_results: Vec<String> = Vec::with_capacity(MAX_GREP_RESULTS.min(64));
+        let mut all_results: Vec<String> = Vec::with_capacity(max_results.min(64));
 
         for entry in walker
             .flatten()
             .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         {
-            if all_results.len() >= MAX_GREP_RESULTS {
+            if all_results.len() >= max_results {
                 break;
             }
 
@@ -155,7 +165,7 @@ impl Tool for GrepTool {
                     if context == 0 {
                         for &ml in &match_lines {
                             all_results.push(format!("{}:{}:{}", path_str, ml + 1, lines[ml]));
-                            if all_results.len() >= MAX_GREP_RESULTS {
+                            if all_results.len() >= max_results {
                                 break;
                             }
                         }
@@ -170,7 +180,7 @@ impl Tool for GrepTool {
                         }
 
                         let mut i = 0;
-                        while i < total && all_results.len() < MAX_GREP_RESULTS {
+                        while i < total && all_results.len() < max_results {
                             if !shown[i] {
                                 i += 1;
                                 continue;
@@ -180,7 +190,7 @@ impl Tool for GrepTool {
                                 all_results.push("--".to_string());
                             }
 
-                            while i < total && shown[i] && all_results.len() < MAX_GREP_RESULTS {
+                            while i < total && shown[i] && all_results.len() < max_results {
                                 let is_match = match_lines.binary_search(&i).is_ok();
                                 let sep = if is_match { ':' } else { '-' };
                                 all_results.push(format!(
@@ -208,15 +218,16 @@ impl Tool for GrepTool {
         }
 
         let total = all_results.len();
-        let truncated = total >= MAX_GREP_RESULTS;
+        let truncated = total >= max_results;
         let result = if truncated {
             format!(
-                "{} results (showing first {}, searched {} files):\n{}\n\n... and {} more matches",
+                "{} results (showing first {}, searched {} files):\n{}\n\n[truncated after {} matches — {} more matches; narrow the pattern or restrict to a path]",
                 total,
-                MAX_GREP_RESULTS,
+                max_results,
                 file_count,
                 all_results.join("\n"),
-                total - MAX_GREP_RESULTS
+                max_results,
+                total - max_results
             )
         } else {
             format!(

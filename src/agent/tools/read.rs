@@ -13,6 +13,7 @@ pub struct ReadTool {
     pub permission: Option<PermCheck>,
     pub ask_tx: Option<AskSender>,
     pub max_text_file_size: u64,
+    pub max_lines: u64,
 }
 
 impl ReadTool {
@@ -20,11 +21,13 @@ impl ReadTool {
         permission: Option<PermCheck>,
         ask_tx: Option<AskSender>,
         max_text_file_size: Option<u64>,
+        max_lines: u64,
     ) -> Self {
         ReadTool {
             permission,
             ask_tx,
             max_text_file_size: max_text_file_size.unwrap_or(DEFAULT_MAX_TEXT_SIZE),
+            max_lines,
         }
     }
 }
@@ -39,7 +42,7 @@ impl Tool for ReadTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         let (desc, params) = match edit_system() {
             EditSystem::Similarity => (
-                "Read the contents of a file. Supports text files. Defaults to first 2000 lines. Use offset/limit for large files.".to_string(),
+                format!("Read the contents of a file. Supports text files. Defaults to first {} lines. Use offset/limit for large files.", self.max_lines),
                 serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -51,7 +54,7 @@ impl Tool for ReadTool {
                 }),
             ),
             EditSystem::Hashedit => (
-                "Read file contents with CRC-32 tagged lines for tag-based editing. Each line is prefixed with 'N|TAG' where TAG is an 8-char hex CRC-32 of the line content. Use these tags with the edit tool for CAS-guarded edits. Defaults to first 2000 lines.".to_string(),
+                format!("Read file contents with CRC-32 tagged lines for tag-based editing. Each line is prefixed with 'N|TAG' where TAG is an 8-char hex CRC-32 of the line content. Use these tags with the edit tool for CAS-guarded edits. Defaults to first {} lines.", self.max_lines),
                 serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -76,7 +79,7 @@ impl Tool for ReadTool {
         let coaching = check_perm_path(&self.permission, &self.ask_tx, "read", &path).await?;
 
         let offset = args.offset.unwrap_or(1).saturating_sub(1);
-        let limit = args.limit.unwrap_or(2000);
+        let limit = args.limit.unwrap_or(self.max_lines as usize);
 
         if let Some(msg) = crate::agent::tools::track_read(&path, offset, limit) {
             return Err(ToolError::Msg(msg));
@@ -154,6 +157,20 @@ impl Tool for ReadTool {
                     excerpt
                 )
             }
+        };
+
+        let info = if end < total_lines {
+            let remaining = total_lines - end;
+            format!(
+                "{}\n\n[truncated after {} lines — {} more lines (lines {}-{}); re-call with offset/limit to see more]",
+                info,
+                end - offset,
+                remaining,
+                end + 1,
+                total_lines,
+            )
+        } else {
+            info
         };
 
         let info = match coaching {

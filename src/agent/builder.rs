@@ -130,11 +130,17 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
         builder.build()
     } else {
         let max_text_file_size = cfg.max_text_file_size;
+        let max_read_lines = cfg.resolve_max_read_lines();
+        let max_bash_output_lines = cfg.resolve_max_bash_output_lines();
+        let max_grep_results = cfg.resolve_max_grep_results();
+        let max_find_results = cfg.resolve_max_find_results();
+        let max_list_dir_entries = cfg.resolve_max_list_dir_entries();
         let base_tools: SmallVec<[Box<dyn rig::tool::ToolDyn>; 8]> = SmallVec::from_buf([
             Box::new(tools::ReadTool::new(
                 permission.clone(),
                 ask_tx.clone(),
                 max_text_file_size,
+                max_read_lines,
             )),
             Box::new(tools::WriteTool::new(
                 permission.clone(),
@@ -146,13 +152,23 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
                 permission.clone(),
                 ask_tx.clone(),
                 sandbox.clone(),
+                max_bash_output_lines,
             )),
-            Box::new(tools::GrepTool::new(permission.clone(), ask_tx.clone())),
+            Box::new(tools::GrepTool::new(
+                permission.clone(),
+                ask_tx.clone(),
+                max_grep_results,
+            )),
             Box::new(tools::FindFilesTool::new(
                 permission.clone(),
                 ask_tx.clone(),
+                max_find_results,
             )),
-            Box::new(tools::ListDirTool::new(permission.clone(), ask_tx.clone())),
+            Box::new(tools::ListDirTool::new(
+                permission.clone(),
+                ask_tx.clone(),
+                max_list_dir_entries,
+            )),
             Box::new(tools::WriteTodoList::new(
                 permission.clone(),
                 ask_tx.clone(),
@@ -302,18 +318,32 @@ pub fn build_btw_agent_inner<M: CompletionModel + 'static>(
     // effects to roll back and never mutates the session. Allow multiple turns
     // so it can read then answer.
     let max_text_file_size = cfg.max_text_file_size;
+    let max_read_lines = cfg.resolve_max_read_lines();
+    let max_grep_results = cfg.resolve_max_grep_results();
+    let max_find_results = cfg.resolve_max_find_results();
+    let max_list_dir_entries = cfg.resolve_max_list_dir_entries();
     let read_tools: Vec<Box<dyn rig::tool::ToolDyn>> = vec![
         Box::new(tools::ReadTool::new(
             permission.clone(),
             ask_tx.clone(),
             max_text_file_size,
+            max_read_lines,
         )),
-        Box::new(tools::GrepTool::new(permission.clone(), ask_tx.clone())),
+        Box::new(tools::GrepTool::new(
+            permission.clone(),
+            ask_tx.clone(),
+            max_grep_results,
+        )),
         Box::new(tools::FindFilesTool::new(
             permission.clone(),
             ask_tx.clone(),
+            max_find_results,
         )),
-        Box::new(tools::ListDirTool::new(permission.clone(), ask_tx.clone())),
+        Box::new(tools::ListDirTool::new(
+            permission.clone(),
+            ask_tx.clone(),
+            max_list_dir_entries,
+        )),
     ];
 
     let mut builder = AgentBuilder::new(model)

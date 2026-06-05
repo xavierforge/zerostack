@@ -32,11 +32,22 @@ fn count_dir_entries(path: &Path) -> u64 {
 pub struct ListDirTool {
     pub permission: Option<PermCheck>,
     pub ask_tx: Option<AskSender>,
+    /// `None` = no truncation (matches the historical behaviour).
+    /// `Some(n)` = show the first `n` entries with a recovery hint.
+    pub max_entries: Option<u64>,
 }
 
 impl ListDirTool {
-    pub fn new(permission: Option<PermCheck>, ask_tx: Option<AskSender>) -> Self {
-        ListDirTool { permission, ask_tx }
+    pub fn new(
+        permission: Option<PermCheck>,
+        ask_tx: Option<AskSender>,
+        max_entries: Option<u64>,
+    ) -> Self {
+        ListDirTool {
+            permission,
+            ask_tx,
+            max_entries,
+        }
     }
 }
 
@@ -139,9 +150,16 @@ impl Tool for ListDirTool {
             });
         }
 
-        let max_name = entries.iter().map(|e| e.0.len()).max().unwrap_or(0);
+        let total_entries = entries.len();
+        let cap = self.max_entries.map(|c| c as usize);
+        let shown = cap.map(|c| total_entries.min(c)).unwrap_or(total_entries);
+        let max_name = entries[..shown]
+            .iter()
+            .map(|e| e.0.len())
+            .max()
+            .unwrap_or(0);
         let mut result = format!("Listing {}:\n", path);
-        for (name, kind, size) in &entries {
+        for (name, kind, size) in &entries[..shown] {
             let padded = format!("{:width$}", name, width = max_name);
             let size_str = if size.is_empty() {
                 String::new()
@@ -149,6 +167,15 @@ impl Tool for ListDirTool {
                 format!("  {}", size)
             };
             result.push_str(&format!("  [{}]  {}{}\n", kind, padded, size_str));
+        }
+        if let Some(cap) = cap
+            && total_entries > cap
+        {
+            result.push_str(&format!(
+                "\n[truncated after {} entries — {} more; list a subdirectory or use find_files with a narrower pattern]",
+                cap,
+                total_entries - cap,
+            ));
         }
         if let Some(msg) = coaching {
             result = format!("{}\n\n{}", msg, result);

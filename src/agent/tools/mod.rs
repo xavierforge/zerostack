@@ -82,9 +82,6 @@ use serde::Deserialize;
 use crate::permission::ask::{AskRequest, AskSender, UserDecision};
 use crate::permission::checker::{CheckResult, PermCheck};
 
-pub const MAX_GREP_RESULTS: usize = 200;
-pub const MAX_FIND_RESULTS: usize = 200;
-
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("{0}")]

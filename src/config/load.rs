@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use compact_str::CompactString;
 
-use crate::config::{Config, EditSystem, QuickModelConfig, ShowToolDetails};
+use crate::config::{Config, EditSystem, LocalLimitsConfig, QuickModelConfig, ShowToolDetails};
 #[cfg(feature = "mcp")]
 use crate::extras::mcp::config::McpServerConfig;
 use crate::session::storage;
@@ -48,6 +48,71 @@ fn resolve_config_path() -> PathBuf {
 
 pub fn config_file_path() -> PathBuf {
     resolve_config_path()
+}
+
+/// Path to the optional `local-limits-config.toml` sidecar, in the same
+/// directory as the main config. Returns the candidate path whether or not
+/// the file exists — callers check existence separately.
+pub fn local_limits_config_path() -> PathBuf {
+    resolve_config_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(storage::data_dir)
+        .join("local-limits-config.toml")
+}
+
+/// Load `local-limits-config.toml` if it exists. Returns `None` when the
+/// file is absent (the common case for non-local-LLM users). Parse errors
+/// — including the `deny_unknown_fields` rejection for non-limit keys —
+/// are fatal and printed to stderr before exit, matching the main config's
+/// behaviour.
+pub fn load_local_limits() -> Option<LocalLimitsConfig> {
+    let path = local_limits_config_path();
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!(
+            "error: failed to read {} ({}). \
+             Remove or fix the file to continue.",
+            path.display(),
+            e,
+        );
+        std::process::exit(1);
+    });
+    let local: LocalLimitsConfig = toml::from_str(&content).unwrap_or_else(|e| {
+        eprintln!(
+            "error: {} is not a valid local-limits config: {}\n\
+             This file may only contain max_read_lines, max_bash_output_lines, \
+             max_grep_results, max_find_results, and max_list_dir_entries.",
+            path.display(),
+            e,
+        );
+        std::process::exit(1);
+    });
+    Some(local)
+}
+
+/// Apply a loaded `LocalLimitsConfig` on top of the main `Config`,
+/// field-by-field. A `Some(_)` in the local config wins over the main
+/// config's value (whether the main value is `Some` or `None`). A `None`
+/// in the local config leaves the main config's value untouched.
+pub fn merge_local_limits(cfg: &mut Config, local: &LocalLimitsConfig) {
+    if local.max_read_lines.is_some() {
+        cfg.max_read_lines = local.max_read_lines;
+    }
+    if local.max_bash_output_lines.is_some() {
+        cfg.max_bash_output_lines = local.max_bash_output_lines;
+    }
+    if local.max_grep_results.is_some() {
+        cfg.max_grep_results = local.max_grep_results;
+    }
+    if local.max_find_results.is_some() {
+        cfg.max_find_results = local.max_find_results;
+    }
+    if local.max_list_dir_entries.is_some() {
+        cfg.max_list_dir_entries = local.max_list_dir_entries;
+    }
 }
 
 fn default_quick_models() -> HashMap<String, QuickModelConfig> {
@@ -188,6 +253,11 @@ pub fn load() -> Config {
             }),
         }
     };
+
+    // Sidecar limits config wins field-by-field over the main config.
+    if let Some(local) = load_local_limits() {
+        merge_local_limits(&mut cfg, &local);
+    }
 
     #[cfg(feature = "mcp")]
     if cfg.mcp_servers.is_none() {

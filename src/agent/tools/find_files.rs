@@ -4,17 +4,26 @@ use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 
 use crate::agent::tools::{
-    AskSender, FindFilesArgs, MAX_FIND_RESULTS, PermCheck, ToolError, check_perm, is_skip_dir,
+    AskSender, FindFilesArgs, PermCheck, ToolError, check_perm, is_skip_dir,
 };
 
 pub struct FindFilesTool {
     pub permission: Option<PermCheck>,
     pub ask_tx: Option<AskSender>,
+    pub max_results: u64,
 }
 
 impl FindFilesTool {
-    pub fn new(permission: Option<PermCheck>, ask_tx: Option<AskSender>) -> Self {
-        FindFilesTool { permission, ask_tx }
+    pub fn new(
+        permission: Option<PermCheck>,
+        ask_tx: Option<AskSender>,
+        max_results: u64,
+    ) -> Self {
+        FindFilesTool {
+            permission,
+            ask_tx,
+            max_results,
+        }
     }
 }
 
@@ -79,7 +88,7 @@ impl Tool for FindFilesTool {
             let fname = entry.file_name().to_string_lossy();
             if re.is_match(&fname) {
                 results.push(entry.path().to_string_lossy().to_string());
-                if results.len() >= MAX_FIND_RESULTS {
+                if (results.len() as u64) >= self.max_results {
                     break;
                 }
             }
@@ -96,13 +105,15 @@ impl Tool for FindFilesTool {
         results.sort();
 
         let total = results.len();
-        let result = if total >= MAX_FIND_RESULTS {
+        let max_results = self.max_results as usize;
+        let result = if total >= max_results {
             format!(
-                "{} files found (showing first {}):\n{}\n\n... and {} more",
+                "{} files found (showing first {}):\n{}\n\n[truncated after {} entries — {} more; narrow the pattern or path]",
                 total,
-                MAX_FIND_RESULTS,
-                results[..MAX_FIND_RESULTS].join("\n"),
-                total - MAX_FIND_RESULTS
+                max_results,
+                results[..max_results].join("\n"),
+                max_results,
+                total - max_results
             )
         } else {
             format!("{} files found:\n{}", total, results.join("\n"))

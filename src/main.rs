@@ -666,6 +666,43 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
     }
     print_section("Model", &model_entries);
 
+    // Attribution for the per-tool output limits.
+    //
+    // The merged `cfg` carries the resolved value; to print _where_ it came
+    // from we load `local-limits-config.toml` separately and check
+    // field-by-field. If both files set a field, local wins (matches the
+    // loader's merge order), so we check local first.
+    let local_limits = config::load_local_limits();
+    let main_config_path = config::config_file_path();
+    let main_config_label = main_config_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config")
+        .to_string();
+    let attribute = |merged: Option<u64>, local_value: Option<u64>| -> &str {
+        if local_value.is_some() {
+            "local-limits-config.toml"
+        } else if merged.is_some() {
+            // `cfg` already merged; if the merged value is Some but local
+            // didn't set it, it must have come from the main config.
+            &main_config_label
+        } else {
+            "default"
+        }
+    };
+    let fmt_opt = |v: Option<u64>| -> String {
+        match v {
+            Some(n) => n.to_string(),
+            None => "— (no cap)".to_string(),
+        }
+    };
+
+    let read_attr = attribute(cfg.max_read_lines, local_limits.as_ref().and_then(|l| l.max_read_lines));
+    let bash_attr = attribute(cfg.max_bash_output_lines, local_limits.as_ref().and_then(|l| l.max_bash_output_lines));
+    let grep_attr = attribute(cfg.max_grep_results, local_limits.as_ref().and_then(|l| l.max_grep_results));
+    let find_attr = attribute(cfg.max_find_results, local_limits.as_ref().and_then(|l| l.max_find_results));
+    let list_attr = attribute(cfg.max_list_dir_entries, local_limits.as_ref().and_then(|l| l.max_list_dir_entries));
+
     print_section(
         "Limits",
         &[
@@ -673,6 +710,26 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
             ("max-agent-turns", max_agent_turns.to_string()),
             ("context-window", context_window.to_string()),
             ("reserve-tokens", cfg.resolve_reserve_tokens().to_string()),
+            (
+                "max-read-lines",
+                format!("{}  ({})", cfg.resolve_max_read_lines(), read_attr),
+            ),
+            (
+                "max-bash-output-lines",
+                format!("{}  ({})", fmt_opt(cfg.resolve_max_bash_output_lines()), bash_attr),
+            ),
+            (
+                "max-grep-results",
+                format!("{}  ({})", cfg.resolve_max_grep_results(), grep_attr),
+            ),
+            (
+                "max-find-results",
+                format!("{}  ({})", cfg.resolve_max_find_results(), find_attr),
+            ),
+            (
+                "max-list-dir-entries",
+                format!("{}  ({})", fmt_opt(cfg.resolve_max_list_dir_entries()), list_attr),
+            ),
         ],
     );
 
