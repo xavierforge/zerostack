@@ -10,51 +10,12 @@ use crossterm::terminal::{Clear, ClearType, ScrollUp};
 use smallvec::{SmallVec, smallvec};
 
 use super::markdown::word_wrap;
-use super::utils::{UiColors, char_display_width, display_width, resolve_color};
-
-/// Semantic color role stored in the buffer. Resolved to a concrete `Color`
-/// at render time via `UiColors`, so theme switches take effect immediately
-/// without re-writing the buffer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineColor {
-    AgentText,
-    Error,
-    ToolCall,
-    Permission,
-    ByTheWay,
-    Reasoning,
-    Secondary,
-    Success,
-    Heading,
-    CodeBlock,
-    LinkText,
-    PromptMarker,
-}
-
-impl LineColor {
-    pub fn resolve(&self, colors: &UiColors) -> Color {
-        match self {
-            LineColor::AgentText => colors.agent_text,
-            LineColor::Error => colors.error,
-            LineColor::ToolCall => colors.tool_call,
-            LineColor::Permission => colors.permission,
-            LineColor::ByTheWay => colors.by_the_way,
-            LineColor::Reasoning => colors.reasoning,
-            LineColor::Secondary => colors.secondary,
-            LineColor::Success => colors.success,
-            LineColor::Heading => colors.heading,
-            LineColor::CodeBlock => colors.code_block,
-            LineColor::LinkText => colors.link_text,
-            LineColor::PromptMarker => colors.prompt_marker,
-
-        }
-    }
-}
+use super::utils::{char_display_width, display_width, resolve_color};
 
 #[derive(Clone)]
 pub struct LineEntry {
     pub text: CompactString,
-    pub color: LineColor,
+    pub color: Color,
 }
 
 pub struct Renderer {
@@ -63,7 +24,7 @@ pub struct Renderer {
     spinner_tick: bool,
     buffer: Vec<LineEntry>,
     partial: CompactString,
-    partial_color: LineColor,
+    partial_color: Color,
     scroll_offset: usize,
     input_scroll_offset: usize,
     monochrome: bool,
@@ -74,7 +35,6 @@ pub struct Renderer {
     pub selection_start: Option<usize>,
     pub selection_end: Option<usize>,
     prev_input_height: usize,
-    colors: UiColors,
 }
 
 impl Renderer {
@@ -85,7 +45,7 @@ impl Renderer {
             spinner_tick: false,
             buffer: Vec::new(),
             partial: CompactString::new(""),
-            partial_color: LineColor::AgentText,
+            partial_color: Color::White,
             scroll_offset: 0,
             input_scroll_offset: 0,
             monochrome: false,
@@ -96,7 +56,6 @@ impl Renderer {
             selection_start: None,
             selection_end: None,
             prev_input_height: 0,
-            colors: UiColors::default_colors(),
         })
     }
 
@@ -104,15 +63,15 @@ impl Renderer {
         self.monochrome = monochrome;
     }
 
-    pub fn colors(&self) -> &UiColors {
-        &self.colors
-    }
-
-    pub fn set_colors(&mut self, colors: UiColors) {
-        self.chat_bg = colors.chat_background;
-        self.input_bg = colors.input_background;
-        self.status_bg = colors.status_background;
-        self.colors = colors;
+    pub fn set_background_colors(
+        &mut self,
+        chat_bg: Option<Color>,
+        input_bg: Option<Color>,
+        status_bg: Option<Color>,
+    ) {
+        self.chat_bg = chat_bg;
+        self.input_bg = input_bg;
+        self.status_bg = status_bg;
     }
 
     fn color(&self, color: Color) -> Color {
@@ -233,7 +192,7 @@ impl Renderer {
             for chunk in self.wrap_line(&self.partial, max_width) {
                 self.buffer.push(LineEntry {
                     text: chunk,
-                    color: c.clone(),
+                    color: c,
                 });
             }
             self.partial.clear();
@@ -344,11 +303,7 @@ impl Renderer {
                 if is_selected {
                     write!(stdout, "{}", SetAttribute(Attribute::Reverse))?;
                 }
-                write!(
-                    stdout,
-                    "{}",
-                    SetForegroundColor(self.color(entry.color.resolve(&self.colors)))
-                )?;
+                write!(stdout, "{}", SetForegroundColor(self.color(entry.color)))?;
                 write!(stdout, "{}", chunk)?;
                 if is_selected {
                     write!(stdout, "{}", SetAttribute(Attribute::NoReverse))?;
@@ -387,7 +342,7 @@ impl Renderer {
             write!(
                 stdout,
                 "{}",
-                SetForegroundColor(self.color(self.colors.scroll_indicator))
+                SetForegroundColor(self.color(Color::DarkYellow))
             )?;
             write!(stdout, "{}", indicator)?;
             write!(stdout, "{}", ResetColor)?;
@@ -435,7 +390,7 @@ impl Renderer {
         }
     }
 
-    pub fn write_line(&mut self, text: &str, color: LineColor) -> io::Result<()> {
+    pub fn write_line(&mut self, text: &str, color: Color) -> io::Result<()> {
         self.commit_partial();
         let max_width = self.max_line_width();
         for segment in text.split('\n') {
@@ -443,7 +398,7 @@ impl Renderer {
             for chunk in &wrapped {
                 self.buffer.push(LineEntry {
                     text: chunk.clone(),
-                    color: color.clone(),
+                    color,
                 });
                 if self.scroll_offset == 0 {
                     self.ensure_room();
@@ -454,11 +409,7 @@ impl Renderer {
                         write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                     }
                     write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
-                    write!(
-                        stdout,
-                        "{}",
-                        SetForegroundColor(self.color(color.resolve(&self.colors)))
-                    )?;
+                    write!(stdout, "{}", SetForegroundColor(self.color(color)))?;
                     writeln!(stdout, "{}", chunk)?;
                     write!(stdout, "{}", ResetColor)?;
                     self.lines = self.lines.saturating_add(1);
@@ -472,7 +423,7 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn write(&mut self, text: &str, color: LineColor) -> io::Result<()> {
+    pub fn write(&mut self, text: &str, color: Color) -> io::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -488,13 +439,13 @@ impl Renderer {
                 self.commit_partial();
                 let had_content = len_before < self.buffer.len();
                 if !segment.is_empty() {
-                    self.partial_color = color.clone();
+                    self.partial_color = color;
                     self.partial.push_str(segment);
                     self.commit_partial();
                 } else if !had_content {
                     self.buffer.push(LineEntry {
                         text: CompactString::new(""),
-                        color: color.clone(),
+                        color,
                     });
                 }
                 if self.scroll_offset == 0 {
@@ -506,11 +457,7 @@ impl Renderer {
                         write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                     }
                     if !segment.is_empty() {
-                        write!(
-                            stdout,
-                            "{}",
-                            SetForegroundColor(self.color(color.resolve(&self.colors)))
-                        )?;
+                        write!(stdout, "{}", SetForegroundColor(self.color(color)))?;
                         write!(stdout, "{}", segment)?;
                         write!(stdout, "{}", ResetColor)?;
                     }
@@ -558,7 +505,7 @@ impl Renderer {
                         }
                     }
                     let chunk: String = chars[idx..end].iter().collect();
-                    self.partial_color = color.clone();
+                    self.partial_color = color;
                     self.partial.push_str(&chunk);
                     if self.scroll_offset == 0 {
                         self.ensure_room();
@@ -568,11 +515,7 @@ impl Renderer {
                         if let Some(bg) = self.chat_bg {
                             write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                         }
-                        write!(
-                            stdout,
-                            "{}",
-                            SetForegroundColor(self.color(color.resolve(&self.colors)))
-                        )?;
+                        write!(stdout, "{}", SetForegroundColor(self.color(color)))?;
                         write!(stdout, "{}", chunk)?;
                         write!(stdout, "{}", ResetColor)?;
 
@@ -709,11 +652,7 @@ impl Renderer {
             }
 
             if i == first_visible {
-                write!(
-                    stdout,
-                    "{}",
-                    SetForegroundColor(self.color(self.colors.prompt_marker))
-                )?;
+                write!(stdout, "{}", SetForegroundColor(self.color(Color::Cyan)))?;
                 write!(stdout, "{}", prompt)?;
                 write!(stdout, "{}", SetForegroundColor(Color::Reset))?;
             } else {
@@ -760,13 +699,7 @@ impl Renderer {
         write!(
             stdout,
             "{}",
-            SetForegroundColor(
-                self.color(
-                    self.colors
-                        .status_foreground
-                        .unwrap_or(self.colors.secondary)
-                )
-            )
+            SetForegroundColor(self.color(Color::DarkGrey))
         )?;
         let status_display = if self.scroll_offset > 0 {
             format!("-- SCROLL -- {}", status)

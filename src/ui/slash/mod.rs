@@ -22,7 +22,11 @@ use crate::sandbox::Sandbox;
 use crate::session::{MessageRole, Session};
 use crate::ui::events::render_session;
 use crate::ui::input::InputEditor;
-use crate::ui::renderer::{LineColor, Renderer};
+use crate::ui::renderer::Renderer;
+
+pub(crate) const C_AGENT: crossterm::style::Color = crossterm::style::Color::White;
+pub(crate) const C_RESULT: crossterm::style::Color = crossterm::style::Color::DarkGrey;
+pub(crate) const C_ERROR: crossterm::style::Color = crossterm::style::Color::Red;
 
 pub struct SlashCtx<'a> {
     pub agent: &'a mut Option<AnyAgent>,
@@ -98,15 +102,15 @@ impl SlashCtx<'_> {
 }
 
 pub(crate) fn write_ok(renderer: &mut Renderer, msg: impl std::fmt::Display) {
-    let _ = renderer.write_line(&msg.to_string(), LineColor::AgentText);
+    let _ = renderer.write_line(&msg.to_string(), C_AGENT);
 }
 
 pub(crate) fn write_result(renderer: &mut Renderer, msg: impl std::fmt::Display) {
-    let _ = renderer.write_line(&msg.to_string(), LineColor::Secondary);
+    let _ = renderer.write_line(&msg.to_string(), C_RESULT);
 }
 
 pub(crate) fn write_error(renderer: &mut Renderer, msg: impl std::fmt::Display) {
-    let _ = renderer.write_line(&msg.to_string(), LineColor::Error);
+    let _ = renderer.write_line(&msg.to_string(), C_ERROR);
 }
 
 pub fn undo_last(session: &mut Session) -> usize {
@@ -149,18 +153,15 @@ pub async fn handle_compress(
     sandbox: &Sandbox,
     #[cfg(feature = "mcp")] mcp_manager: Option<&crate::extras::mcp::McpClientManager>,
 ) -> anyhow::Result<()> {
-    renderer.write_line("compressing...", LineColor::AgentText)?;
-    renderer.write_line("", LineColor::AgentText)?;
+    renderer.write_line("compressing...", C_AGENT)?;
+    renderer.write_line("", crossterm::style::Color::White)?;
 
     let reserve = cfg.resolve_reserve_tokens();
     let keep_recent = cfg.resolve_keep_recent_tokens();
     let max_tokens = session.context_window.saturating_sub(reserve);
 
     if session.total_estimated_tokens <= max_tokens {
-        renderer.write_line(
-            "context within limits, no compression needed",
-            LineColor::AgentText,
-        )?;
+        renderer.write_line("context within limits, no compression needed", C_AGENT)?;
         return Ok(());
     }
 
@@ -175,10 +176,7 @@ pub async fn handle_compress(
     }
 
     if cut_idx == 0 {
-        renderer.write_line(
-            "nothing to compress (entire context is recent)",
-            LineColor::AgentText,
-        )?;
+        renderer.write_line("nothing to compress (entire context is recent)", C_AGENT)?;
         return Ok(());
     }
 
@@ -223,10 +221,7 @@ pub async fn handle_compress(
         )
         .await,
     );
-    renderer.write_line(
-        "prompt cleared (back to default behavior)",
-        LineColor::AgentText,
-    )?;
+    renderer.write_line("prompt cleared (back to default behavior)", C_AGENT)?;
 
     render_session(renderer, session, cli, cfg, context)?;
     renderer.write_line(
@@ -234,7 +229,7 @@ pub async fn handle_compress(
             "compressed {} messages (saved ~{} tokens)",
             cut_idx, tokens_before,
         ),
-        LineColor::AgentText,
+        C_AGENT,
     )?;
 
     Ok(())

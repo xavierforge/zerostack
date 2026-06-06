@@ -8,7 +8,7 @@ use crossterm::cursor::MoveTo;
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::terminal::Clear;
 
-use super::super::utils::{UiColors, resolve_color};
+use super::super::utils::resolve_color;
 
 pub struct FilePicker {
     pub active: bool,
@@ -20,7 +20,6 @@ pub struct FilePicker {
     monochrome: bool,
     loading: bool,
     walk_done: Arc<AtomicBool>,
-    colors: UiColors,
 }
 
 impl FilePicker {
@@ -33,7 +32,6 @@ impl FilePicker {
             selected: 0,
             file_cache: Arc::new(Mutex::new(Vec::new())),
             monochrome: false,
-            colors: UiColors::default_colors(),
             loading: false,
             walk_done: Arc::new(AtomicBool::new(false)),
         }
@@ -41,10 +39,6 @@ impl FilePicker {
 
     pub fn set_monochrome(&mut self, monochrome: bool) {
         self.monochrome = monochrome;
-    }
-
-    pub fn set_colors(&mut self, colors: UiColors) {
-        self.colors = colors;
     }
 
     fn color(&self, color: Color) -> Color {
@@ -186,7 +180,7 @@ impl FilePicker {
             write!(
                 stdout,
                 "{}",
-                SetForegroundColor(self.color(self.colors.picker_secondary))
+                SetForegroundColor(self.color(Color::DarkGrey))
             )?;
             write!(stdout, "scanning files...")?;
             write!(stdout, "{}", ResetColor)?;
@@ -200,7 +194,7 @@ impl FilePicker {
             write!(
                 stdout,
                 "{}",
-                SetForegroundColor(self.color(self.colors.picker_secondary))
+                SetForegroundColor(self.color(Color::DarkGrey))
             )?;
             write!(stdout, "no matches")?;
             write!(stdout, "{}", ResetColor)?;
@@ -237,17 +231,13 @@ impl FilePicker {
                 .collect();
 
             if i == self.selected {
-                write!(
-                    stdout,
-                    "{}",
-                    SetForegroundColor(self.color(self.colors.picker_selected))
-                )?;
+                write!(stdout, "{}", SetForegroundColor(self.color(Color::Green)))?;
                 write!(stdout, "▸ {}", truncated)?;
             } else {
                 write!(
                     stdout,
                     "{}",
-                    SetForegroundColor(self.color(self.colors.picker_secondary))
+                    SetForegroundColor(self.color(Color::DarkGrey))
                 )?;
                 write!(stdout, "  {}", truncated)?;
             }

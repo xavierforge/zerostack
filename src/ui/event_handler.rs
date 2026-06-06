@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-
+use crossterm::style::Color;
 use tokio::sync::mpsc;
 
 use crate::agent::tools::todo::TODO_LIST;
@@ -16,10 +16,10 @@ use crate::provider::{AnyAgent, AnyClient};
 use crate::sandbox::Sandbox;
 use crate::session::{MessageRole, Session};
 use crate::ui::events::sanitize_output;
-use crate::ui::renderer::{LineColor, Renderer};
+use crate::ui::renderer::Renderer;
 use crate::ui::slash::handle_compress;
 
-use super::apply_current_prompt_mode;
+use super::{C_AGENT, C_ERROR, C_TOOL, apply_current_prompt_mode};
 
 #[cfg(feature = "mcp")]
 #[allow(clippy::too_many_arguments)]
@@ -121,16 +121,16 @@ pub async fn handle_agent_event(
                 return Ok(());
             }
             if !*agent_line_started {
-                renderer.write("< ", LineColor::Reasoning)?;
+                renderer.write("< ", Color::DarkMagenta)?;
                 *agent_line_started = true;
             }
             let safe = sanitize_output(&text);
-            renderer.write(&safe, LineColor::Reasoning)?;
+            renderer.write(&safe, Color::DarkMagenta)?;
             *was_reasoning = true;
         }
         AgentEvent::Token(text) => {
             if *was_reasoning {
-                renderer.write_line("", LineColor::AgentText)?;
+                renderer.write_line("", Color::White)?;
                 *agent_line_started = false;
                 *was_reasoning = false;
                 response_buf.clear();
@@ -163,7 +163,7 @@ pub async fn handle_agent_event(
         AgentEvent::ToolCall { name, args } => {
             *was_reasoning = false;
             if *agent_line_started {
-                renderer.write_line("", LineColor::AgentText)?;
+                renderer.write_line("", Color::White)?;
                 *agent_line_started = false;
             }
             response_buf.clear();
@@ -172,26 +172,26 @@ pub async fn handle_agent_event(
                 "◈ {}",
                 crate::ui::utils::format_tool_call_summary(&name, &args)
             );
-            renderer.write_line(&sanitize_output(&line), LineColor::ToolCall)?;
+            renderer.write_line(&sanitize_output(&line), C_TOOL)?;
         }
         AgentEvent::SubagentToolCall { name, args } => {
             let line = format!(
                 "⌥ {}",
                 crate::ui::utils::format_tool_call_summary(&name, &args)
             );
-            renderer.write_line(&sanitize_output(&line), LineColor::ToolCall)?;
+            renderer.write_line(&sanitize_output(&line), C_TOOL)?;
         }
         AgentEvent::ToolResult { name, output } => {
             if name == "write_todo_list" {
                 let list = TODO_LIST.lock().unwrap_or_else(|e| e.into_inner());
                 if list.is_empty() {
-                    renderer.write_line("tasks cleared", LineColor::Secondary)?;
+                    renderer.write_line("tasks cleared", Color::DarkGrey)?;
                 } else {
                     let total = list.len();
                     let completed = list.iter().filter(|t| t.status == "completed").count();
                     renderer.write_line(
                         &format!("tasks  {} done / {} total", completed, total),
-                        LineColor::ToolCall,
+                        C_TOOL,
                     )?;
                     for item in list.iter() {
                         let icon = match item.status.as_str() {
@@ -201,10 +201,10 @@ pub async fn handle_agent_event(
                             _ => "[ ]",
                         };
                         let status_color = match item.status.as_str() {
-                            "completed" => LineColor::Success,
-                            "in_progress" => LineColor::ToolCall,
-                            "cancelled" => LineColor::Secondary,
-                            _ => LineColor::Secondary,
+                            "completed" => Color::Green,
+                            "in_progress" => C_TOOL,
+                            "cancelled" => Color::DarkGrey,
+                            _ => Color::DarkGrey,
                         };
                         let priority_mark = match item.priority.as_str() {
                             "high" => "!!",
@@ -238,18 +238,18 @@ pub async fn handle_agent_event(
                                 max_lines,
                                 shown
                             );
-                            renderer.write_line(&summary, LineColor::Secondary)?;
+                            renderer.write_line(&summary, Color::DarkGrey)?;
                         } else {
                             let summary =
                                 format!("◈ result ({} chars):\n{}", char_count, sanitized);
-                            renderer.write_line(&summary, LineColor::Secondary)?;
+                            renderer.write_line(&summary, Color::DarkGrey)?;
                         }
                     }
                     ResolvedShowToolDetails::Unlimited => {
                         let sanitized = sanitize_output(&output);
                         let char_count = sanitized.chars().count();
                         let summary = format!("◈ result ({} chars):\n{}", char_count, sanitized);
-                        renderer.write_line(&summary, LineColor::Secondary)?;
+                        renderer.write_line(&summary, Color::DarkGrey)?;
                     }
                 }
             }
@@ -293,7 +293,7 @@ pub async fn handle_agent_event(
         AgentEvent::Error(e) => {
             *was_reasoning = false;
             let safe = sanitize_output(&e);
-            renderer.write_line(&format!("error: {}", safe), LineColor::Error)?;
+            renderer.write_line(&format!("error: {}", safe), C_ERROR)?;
             *is_running = false;
             if let Some(ss) = status_signals.as_ref() {
                 ss.send_stop();
@@ -347,11 +347,11 @@ async fn handle_agent_done(
             renderer.render_viewport()?;
         }
     } else if !*agent_line_started {
-        renderer.write("< ", LineColor::AgentText)?;
+        renderer.write("< ", C_AGENT)?;
     }
 
-    renderer.write_line("", LineColor::AgentText)?;
-    renderer.write_line("", LineColor::AgentText)?;
+    renderer.write_line("", Color::White)?;
+    renderer.write_line("", Color::White)?;
     session.add_message(MessageRole::Assistant, &response);
     session.total_input_tokens = session.total_input_tokens.saturating_add(input_tokens);
     session.total_output_tokens = session.total_output_tokens.saturating_add(output_tokens);
@@ -383,7 +383,7 @@ async fn handle_agent_done(
         && session.needs_compaction(reserve)
         && !cli.no_session
     {
-        renderer.write_line("auto-compacting...", LineColor::Secondary)?;
+        renderer.write_line("auto-compacting...", Color::DarkGrey)?;
         let compress_result = handle_compress(
             None,
             agent,
@@ -402,17 +402,14 @@ async fn handle_agent_done(
         )
         .await;
         if let Err(e) = compress_result {
-            renderer.write_line(&format!("auto-compact error: {}", e), LineColor::Error)?;
+            renderer.write_line(&format!("auto-compact error: {}", e), C_ERROR)?;
         }
     }
 
     if !cli.no_session
         && let Err(e) = crate::session::storage::save_session(session)
     {
-        renderer.write_line(
-            &format!("warning: failed to save session: {}", e),
-            LineColor::Error,
-        )?;
+        renderer.write_line(&format!("warning: failed to save session: {}", e), C_ERROR)?;
     }
     *is_running = false;
     if let Some(ss) = status_signals.as_ref() {
@@ -427,7 +424,7 @@ async fn handle_agent_done(
         if ls.should_stop() {
             renderer.write_line(
                 &format!("[loop] max iterations ({}) reached, stopping", ls.iteration),
-                LineColor::AgentText,
+                C_AGENT,
             )?;
             ls.active = false;
             *loop_label = None;
@@ -465,7 +462,7 @@ async fn handle_agent_done(
             *loop_label = Some(ls.iteration_label());
             renderer.write_line(
                 &format!("[loop] launching {}", ls.iteration_label()),
-                LineColor::AgentText,
+                C_AGENT,
             )?;
         }
     }
@@ -500,13 +497,13 @@ async fn handle_agent_done(
                 crate::ui::events::render_session(renderer, session, cli, cfg, context)?;
                 renderer.write_line(
                     &format!("merged and returned to main repo at {}", main_path),
-                    LineColor::AgentText,
+                    C_AGENT,
                 )?;
             }
             Err(e) => {
                 renderer.write_line(
                     &format!("warning: failed to change back to main repo: {}", e),
-                    LineColor::Error,
+                    C_ERROR,
                 )?;
             }
         }
