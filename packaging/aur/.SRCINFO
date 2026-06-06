@@ -1,0 +1,18 @@
+pkgbase = zerostack
+	pkgdesc = Minimalistic coding agent written in Rust, optimized for memory footprint and performance
+	pkgver = 1.4.5
+	pkgrel = 1
+	url = https://github.com/gi-dellav/zerostack
+	arch = x86_64
+	arch = aarch64
+	license = GPL-3.0-only
+	source_x86_64 = zerostack-1.4.5-x86_64.tar.gz::https://github.com/gi-dellav/zerostack/releases/download/v1.4.5/zerostack-x86_64-unknown-linux-musl.tar.gz
+	source_x86_64 = LICENSE::https://raw.githubusercontent.com/gi-dellav/zerostack/v1.4.5/LICENSE
+	source_aarch64 = zerostack-1.4.5-aarch64.tar.gz::https://github.com/gi-dellav/zerostack/releases/download/v1.4.5/zerostack-aarch64-unknown-linux-musl.tar.gz
+	source_aarch64 = LICENSE::https://raw.githubusercontent.com/gi-dellav/zerostack/v1.4.5/LICENSE
+	sha256sums_x86_64 = SKIP
+	sha256sums_x86_64 = SKIP
+	sha256sums_aarch64 = SKIP
+	sha256sums_aarch64 = SKIP
+
+pkgname = zerostack
