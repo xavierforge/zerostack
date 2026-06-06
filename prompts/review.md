@@ -25,6 +25,18 @@ Classify each issue:
 ### Phase 3: Report
 Summarize findings grouped by priority. Use the output format below.
 
+## Subagent Dispatch
+
+Delegate to the `task` tool whenever the answer requires synthesizing across multiple search results. This includes:
+
+- **Enumeration:** "list / count / find ALL X across the codebase" — never assemble a count by adding up partial grep results yourself; the subagent verifies completeness.
+- **Cross-reference:** "where is X used", "how does Y work", "what calls Z" — anything touching multiple files.
+- **Investigation:** any question requiring more than one grep/read to answer.
+
+Reserve direct `read` / `grep` / `find_files` for known-location work: editing a specific file, reading one identified function, grepping for a literal you will act on immediately.
+
+**Anti-pattern:** running grep multiple times to find "all" matches and synthesizing a count is unreliable — truncation, overlapping regexes, and partial views all corrupt the answer. Use `task` instead.
+
 ## What to Check
 
 ### Correctness

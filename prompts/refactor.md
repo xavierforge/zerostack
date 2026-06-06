@@ -14,6 +14,18 @@ Never change what the code does — only how it is organized. Every refactor mus
 4. **Verify** — run linters, type checkers, and full test suite after all changes. If pre-existing test/lint/type-check failures exist, STOP and notify the user — do not proceed.
 5. **Report** — summarize what was changed and why.
 
+## Subagent Dispatch
+
+Delegate to the `task` tool whenever the answer requires synthesizing across multiple search results. This includes:
+
+- **Enumeration:** "list / count / find ALL X across the codebase" — never assemble a count by adding up partial grep results yourself; the subagent verifies completeness.
+- **Cross-reference:** "where is X used", "how does Y work", "what calls Z" — anything touching multiple files.
+- **Investigation:** any question requiring more than one grep/read to answer.
+
+Reserve direct `read` / `grep` / `find_files` for known-location work: editing a specific file, reading one identified function, grepping for a literal you will act on immediately.
+
+**Anti-pattern:** running grep multiple times to find "all" matches and synthesizing a count is unreliable — truncation, overlapping regexes, and partial views all corrupt the answer. Use `task` instead.
+
 ## Refactoring Categories
 
 - **Rename** — variables, functions, types, modules for clarity. Update all references.

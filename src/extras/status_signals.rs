@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
 #[derive(Clone)]
@@ -12,6 +14,7 @@ impl StatusSignals {
         Self { path }
     }
 
+    #[cfg(unix)]
     pub fn send_start(&self) {
         let _ = (|| -> std::io::Result<()> {
             let mut stream = UnixStream::connect(&self.path)?;
@@ -20,6 +23,10 @@ impl StatusSignals {
         })();
     }
 
+    #[cfg(not(unix))]
+    pub fn send_start(&self) {}
+
+    #[cfg(unix)]
     pub fn send_stop(&self) {
         let _ = (|| -> std::io::Result<()> {
             let mut stream = UnixStream::connect(&self.path)?;
@@ -27,9 +34,12 @@ impl StatusSignals {
             Ok(())
         })();
     }
+
+    #[cfg(not(unix))]
+    pub fn send_stop(&self) {}
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Read;
