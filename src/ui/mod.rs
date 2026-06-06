@@ -18,7 +18,7 @@ use std::time::Duration;
 use crossterm::ExecutableCommand;
 use crossterm::event;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-
+use crossterm::style::Color;
 use tokio::sync::mpsc;
 
 use crate::cli::Cli;
@@ -39,12 +39,12 @@ use crate::ui::event_handler::{ensure_agent, handle_agent_event};
 use crate::ui::events::{render_session, sanitize_output};
 use crate::ui::input::InputEditor;
 use crate::ui::permission_handler::handle_permission_request;
-use crate::ui::renderer::{LineColor, Renderer, copy_to_clipboard};
+use crate::ui::renderer::{Renderer, copy_to_clipboard};
 use crate::ui::slash::{handle_compress, handle_slash};
 use crate::ui::status::StatusLine;
 use crate::ui::terminal::TerminalGuard;
 
-use self::utils::UiColors;
+use self::utils::parse_color;
 
 pub(crate) fn apply_current_prompt_mode(
     context: &mut ContextFiles,
@@ -68,6 +68,12 @@ pub(crate) fn apply_current_prompt_mode(
         guard.set_prompt_mode(mode);
     }
 }
+
+pub(super) const C_AGENT: Color = Color::White;
+pub(super) const C_ERROR: Color = Color::Red;
+pub(super) const C_TOOL: Color = Color::Yellow;
+pub(super) const C_PERM: Color = Color::Magenta;
+pub(super) const C_BTW: Color = Color::Cyan;
 
 #[allow(clippy::too_many_arguments)]
 fn refresh_display(
@@ -305,10 +311,12 @@ pub async fn run_interactive(
             crate::context::themes::apply(content, &mut renderer);
         }
     } else if let Some(colors) = &cfg.colors {
-        renderer.set_colors(UiColors::from_config(colors));
+        let chat_bg = colors.chat_background.as_deref().and_then(parse_color);
+        let input_bg = colors.input_background.as_deref().and_then(parse_color);
+        let status_bg = colors.status_background.as_deref().and_then(parse_color);
+        renderer.set_background_colors(chat_bg, input_bg, status_bg);
     }
     let mut input = InputEditor::new();
-    input.set_colors(renderer.colors().clone());
     input.set_monochrome(cli.no_color);
     input.set_prompt_names(context.prompts.keys().cloned().collect());
     input.set_theme_names(context.themes.keys().cloned().collect());
@@ -437,7 +445,7 @@ pub async fn run_interactive(
                 let _ = render_session(&mut renderer, session, cli, cfg, context);
             }
             Err(e) => {
-                let _ = renderer.write_line(&format!("worktree failed: {}", e), LineColor::Error);
+                let _ = renderer.write_line(&format!("worktree failed: {}", e), C_ERROR);
             }
         }
     }
@@ -476,7 +484,7 @@ pub async fn run_interactive(
                 let _ = render_session(&mut renderer, session, cli, cfg, context);
             }
             Err(e) => {
-                let _ = renderer.write_line(&format!("worktree failed: {}", e), LineColor::Error);
+                let _ = renderer.write_line(&format!("worktree failed: {}", e), C_ERROR);
             }
         }
     }
@@ -484,9 +492,9 @@ pub async fn run_interactive(
     if let Some(ref trigger_msg) = auto_trigger_msg {
         for line in trigger_msg.lines() {
             let safe_line = sanitize_output(line);
-            renderer.write_line(&format!("> {}", safe_line), LineColor::PromptMarker)?;
+            renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
         }
-        renderer.write_line("", LineColor::AgentText)?;
+        renderer.write_line("", Color::White)?;
 
         #[cfg(feature = "mcp")]
         let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
@@ -592,7 +600,7 @@ pub async fn run_interactive(
                                     h.abort();
                                 }
                                 btw_inflight = 0;
-                                renderer.write_line("btw cancelled", LineColor::Error)?;
+                                renderer.write_line("btw cancelled", C_ERROR)?;
                                 refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             } else if is_running {
                                 // Actually cancel the run's task (not just stop
@@ -627,7 +635,7 @@ pub async fn run_interactive(
                                 }
                                 renderer.write_line(
                                     "interrupted (changes may be partial; review with git diff)",
-                                    LineColor::Error,
+                                    C_ERROR,
                                 )?;
                                 refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             } else {
@@ -639,7 +647,7 @@ pub async fn run_interactive(
                         if renderer.selection_active && key.code == KeyCode::Char('y') {
                             if let Some(text) = renderer.selected_text() {
                                 copy_to_clipboard(&text);
-                                renderer.write_line("copied selection", LineColor::Success)?;
+                                renderer.write_line("copied selection", Color::Green)?;
                             }
                             renderer.clear_selection();
                             refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
@@ -657,7 +665,7 @@ pub async fn run_interactive(
                             show_reasoning = !show_reasoning;
                             renderer.write_line(
                                 &format!("reasoning visibility: {}", if show_reasoning { "on" } else { "off" }),
-                                LineColor::AgentText,
+                                Color::White,
                             )?;
                             refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
@@ -716,7 +724,7 @@ pub async fn run_interactive(
                             {
                                 renderer.write_line(
                                     "warning: lazygit not found — install it (https://github.com/jesseduffield/lazygit)",
-                                    LineColor::Error,
+                                    C_ERROR,
                                 )?;
                                 refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
@@ -747,7 +755,7 @@ pub async fn run_interactive(
                         if let Some(mut text) = input.handle_key(key) {
                             #[cfg(feature = "loop")]
                             if loop_state.as_ref().is_some_and(|ls| ls.active) && !text.starts_with('/') {
-                                renderer.write_line("loop active: /loop stop to cancel", LineColor::Error)?;
+                                renderer.write_line("loop active: /loop stop to cancel", C_ERROR)?;
                                 refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
@@ -769,14 +777,14 @@ pub async fn run_interactive(
                                 SubmitAction::RejectWhileRunning => {
                                     renderer.write_line(
                                         "agent is running — wait for it to finish or press Ctrl-C before running a command",
-                                        LineColor::Error,
+                                        C_ERROR,
                                     )?;
                                     refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                                 SubmitAction::Queue => {
                                     pending_inputs.push_back(text.to_string());
-                                    renderer.write_line(&format!("queued: {}", sanitize_output(&text)), LineColor::ToolCall)?;
+                                    renderer.write_line(&format!("queued: {}", sanitize_output(&text)), C_TOOL)?;
                                     refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
@@ -792,23 +800,23 @@ pub async fn run_interactive(
                                         "clear" => {
                                             let n = pending_inputs.len();
                                             pending_inputs.clear();
-                                            renderer.write_line(&format!("queue cleared ({} removed)", n), LineColor::ToolCall)?;
+                                            renderer.write_line(&format!("queue cleared ({} removed)", n), C_TOOL)?;
                                         }
                                         "pop" => match pending_inputs.pop_back() {
-                                            Some(x) => renderer.write_line(&format!("unqueued: {}", sanitize_output(&x)), LineColor::ToolCall)?,
-                                            None => renderer.write_line("queue is empty", LineColor::ToolCall)?,
+                                            Some(x) => renderer.write_line(&format!("unqueued: {}", sanitize_output(&x)), C_TOOL)?,
+                                            None => renderer.write_line("queue is empty", C_TOOL)?,
                                         },
                                         "" | "ls" | "list" => {
                                             if pending_inputs.is_empty() {
-                                                renderer.write_line("queue is empty", LineColor::ToolCall)?;
+                                                renderer.write_line("queue is empty", C_TOOL)?;
                                             } else {
-                                                renderer.write_line(&format!("queued ({}):", pending_inputs.len()), LineColor::ToolCall)?;
+                                                renderer.write_line(&format!("queued ({}):", pending_inputs.len()), C_TOOL)?;
                                                 for (i, q) in pending_inputs.iter().enumerate() {
-                                                    renderer.write_line(&format!("  {}. {}", i + 1, sanitize_output(q)), LineColor::ToolCall)?;
+                                                    renderer.write_line(&format!("  {}. {}", i + 1, sanitize_output(q)), C_TOOL)?;
                                                 }
                                             }
                                         }
-                                        _ => renderer.write_line("usage: /queue [ls|clear|pop]", LineColor::Error)?,
+                                        _ => renderer.write_line("usage: /queue [ls|clear|pop]", C_ERROR)?,
                                     }
                                     refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
@@ -824,12 +832,12 @@ pub async fn run_interactive(
                                 let t = text.trim_start();
                                 if t == "/btw" || t.starts_with("/btw ") {
                                     for line in text.lines() {
-                                        renderer.write_line(&format!("> {}", sanitize_output(line)), LineColor::PromptMarker)?;
+                                        renderer.write_line(&format!("> {}", sanitize_output(line)), Color::Green)?;
                                     }
-                                    renderer.write_line("", LineColor::AgentText)?;
+                                    renderer.write_line("", Color::White)?;
                                     let btw_text = t.strip_prefix("/btw").map(|s| s.trim()).unwrap_or("");
                                     if btw_text.is_empty() {
-                                        renderer.write_line("usage: /btw <message>", LineColor::AgentText)?;
+                                        renderer.write_line("usage: /btw <message>", C_AGENT)?;
                                     } else {
                                         let id = btw_next_id;
                                         btw_next_id = btw_next_id.wrapping_add(1);
@@ -845,7 +853,7 @@ pub async fn run_interactive(
                                         );
                                         btw_abort.push((id, runner.abort_handle));
                                         btw_inflight += 1;
-                                        renderer.write_line(&format!("[btw #{}] thinking...", id), LineColor::ByTheWay)?;
+                                        renderer.write_line(&format!("[btw #{}] thinking...", id), C_BTW)?;
                                     }
                                     refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
@@ -858,9 +866,9 @@ pub async fn run_interactive(
 
                                 for line in text.lines() {
                                     let safe_line = sanitize_output(line);
-                                    renderer.write_line(&format!("> {}", safe_line), LineColor::PromptMarker)?;
+                                    renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
                                 }
-                                renderer.write_line("", LineColor::AgentText)?;
+                                renderer.write_line("", Color::White)?;
 
                                 if after_dot.is_empty() {
                                     input.buffer = ".".into();
@@ -893,7 +901,7 @@ pub async fn run_interactive(
                                         text = msg.to_string().into();
                                         is_dot_cmd = false;
                                     } else {
-                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), LineColor::Error)?;
+                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), C_ERROR)?;
                                     }
                                 } else {
                                     let prompt_name = after_dot.trim();
@@ -917,17 +925,17 @@ pub async fn run_interactive(
                                                     }
                                                 }
                                         }
-                                        renderer.write_line(&format!("switched to prompt '{}'", prompt_name), LineColor::AgentText)?;
+                                        renderer.write_line(&format!("switched to prompt '{}'", prompt_name), C_AGENT)?;
                                         if !cli.no_session
                                             && let Err(e) = crate::session::storage::save_session(session)
                                         {
                                             renderer.write_line(
                                                 &format!("warning: failed to save session: {}", e),
-                                                LineColor::Error,
+                                                C_ERROR,
                                             )?;
                                         }
                                     } else {
-                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), LineColor::Error)?;
+                                        renderer.write_line(&format!("error: unknown prompt '{}'", prompt_name), C_ERROR)?;
                                     }
                                 }
                             }
@@ -935,9 +943,9 @@ pub async fn run_interactive(
                             if text.starts_with('/') {
                                 for line in text.lines() {
                                     let safe_line = sanitize_output(line);
-                                    renderer.write_line(&format!("> {}", safe_line), LineColor::PromptMarker)?;
+                                    renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
                                 }
-                                renderer.write_line("", LineColor::AgentText)?;
+                                renderer.write_line("", Color::White)?;
                                 #[cfg(feature = "mcp")]
                                 let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
                                 // `/btw` is handled earlier in the bypass-slot (it
@@ -968,7 +976,7 @@ pub async fn run_interactive(
                                             #[cfg(feature = "mcp")] mcp_ref,
                                         ).await;
                                         if let Err(e) = compress_result {
-                                            renderer.write_line(&format!("compress error: {}", e), LineColor::Error)?;
+                                            renderer.write_line(&format!("compress error: {}", e), C_ERROR)?;
                                         }
                                         let _ = crate::session::storage::save_session(session);
                                     }
@@ -1062,7 +1070,7 @@ pub async fn run_interactive(
                                             render_session(&mut renderer, session, cli, cfg, context)?;
                                             renderer.write_line(
                                                 &format!("returned to main repo at {}", main_path),
-                                                LineColor::AgentText,
+                                                C_AGENT,
                                             )?;
                                         }
                                     }
@@ -1105,13 +1113,13 @@ pub async fn run_interactive(
                                         let _ = crossterm::ExecutableCommand::execute(&mut stdout, crossterm::event::EnableMouseCapture);
                                         let _ = crossterm::terminal::enable_raw_mode();
                                         render_session(&mut renderer, session, cli, cfg, context)?;
-                                        renderer.write_line(&format!("returned from editing {}", path), LineColor::AgentText)?;
+                                        renderer.write_line(&format!("returned from editing {}", path), C_AGENT)?;
                                     }
                                     Err(e) => {
                                         if e.downcast_ref::<std::io::Error>().is_some_and(|e: &std::io::Error| e.kind() == std::io::ErrorKind::Interrupted) {
                                             break;
                                         }
-                                        renderer.write_line(&format!("error: {}", e), LineColor::Error)?;
+                                        renderer.write_line(&format!("error: {}", e), C_ERROR)?;
                                     }
                                     Ok(_) => {
                                         if !cli.no_session
@@ -1119,7 +1127,7 @@ pub async fn run_interactive(
                                         {
                                             renderer.write_line(
                                                 &format!("warning: failed to save session: {}", e),
-                                                LineColor::Error,
+                                                C_ERROR,
                                             )?;
                                         }
                                         #[cfg(feature = "loop")]
@@ -1148,7 +1156,7 @@ pub async fn run_interactive(
                                 {
                                     renderer.write_line(
                                         &format!("warning: failed to save session: {}", e),
-                                        LineColor::Error,
+                                        C_ERROR,
                                     )?;
                                 }
                             } else if text.starts_with('!') {
@@ -1156,9 +1164,9 @@ pub async fn run_interactive(
                                 if !cmd.is_empty() {
                                     for line in text.lines() {
                                         let safe_line = sanitize_output(line);
-                                        renderer.write_line(&format!("> {}", safe_line), LineColor::PromptMarker)?;
+                                        renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
                                     }
-                                    renderer.write_line("", LineColor::AgentText)?;
+                                    renderer.write_line("", Color::White)?;
 
                                     let cmd_owned = cmd.to_string();
                                     let output = tokio::task::spawn_blocking(move || {
@@ -1187,10 +1195,10 @@ pub async fn run_interactive(
                                         let safe_line = sanitize_output(line);
                                         renderer.write_line(
                                             &safe_line,
-                                            if output.status.success() { LineColor::AgentText } else { LineColor::Error },
+                                            if output.status.success() { C_AGENT } else { C_ERROR },
                                         )?;
                                     }
-                                    renderer.write_line("", LineColor::AgentText)?;
+                                    renderer.write_line("", Color::White)?;
 
                                     session.add_message(MessageRole::User, &text);
                                     session.add_message(MessageRole::Assistant, &result);
@@ -1203,14 +1211,14 @@ pub async fn run_interactive(
                                         );
                                     }
                                 } else {
-                                    renderer.write_line("error: empty command after '!'", LineColor::Error)?;
+                                    renderer.write_line("error: empty command after '!'", C_ERROR)?;
                                 }
                             } else {
                                 for line in text.lines() {
                                     let safe_line = sanitize_output(line);
-                                    renderer.write_line(&format!("> {}", safe_line), LineColor::PromptMarker)?;
+                                    renderer.write_line(&format!("> {}", safe_line), Color::Green)?;
                                 }
-                                renderer.write_line("", LineColor::AgentText)?;
+                                renderer.write_line("", Color::White)?;
 
                                 // Guaranteed not running here (the is_running gate
                                 // above returns early), so this never orphans a run.
@@ -1296,9 +1304,9 @@ pub async fn run_interactive(
                     main_abort = None;
                     if let Some(next) = pending_inputs.pop_front() {
                         for line in next.lines() {
-                            renderer.write_line(&format!("> {}", sanitize_output(line)), LineColor::PromptMarker)?;
+                            renderer.write_line(&format!("> {}", sanitize_output(line)), Color::Green)?;
                         }
-                        renderer.write_line("", LineColor::AgentText)?;
+                        renderer.write_line("", Color::White)?;
                         start_main_run(
                             &next, &mut agent, &client, session, cli, cfg, context,
                             &permission, &ask_tx, &sandbox, reasoning_enabled,
@@ -1332,16 +1340,16 @@ pub async fn run_interactive(
                         btw_total_out = btw_total_out.saturating_add(output_tokens);
                         btw_abort.retain(|(i, _)| *i != id);
                         btw_inflight = btw_inflight.saturating_sub(1);
-                        renderer.write_line(&format!("[btw #{}] answer:", id), LineColor::ByTheWay)?;
+                        renderer.write_line(&format!("[btw #{}] answer:", id), C_BTW)?;
                         for line in response.lines() {
-                            renderer.write_line(&sanitize_output(line), LineColor::AgentText)?;
+                            renderer.write_line(&sanitize_output(line), C_AGENT)?;
                         }
-                        renderer.write_line("", LineColor::AgentText)?;
+                        renderer.write_line("", Color::White)?;
                     }
                     crate::event::BtwEvent::Error { id, message } => {
                         btw_abort.retain(|(i, _)| *i != id);
                         btw_inflight = btw_inflight.saturating_sub(1);
-                        renderer.write_line(&format!("[btw #{}] error: {}", id, sanitize_output(&message)), LineColor::Error)?;
+                        renderer.write_line(&format!("[btw #{}] error: {}", id, sanitize_output(&message)), C_ERROR)?;
                     }
                 }
                 refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
@@ -1367,7 +1375,7 @@ pub async fn run_interactive(
                 "auto-merging worktree '{}' into '{}'...",
                 info.branch, target
             ),
-            LineColor::AgentText,
+            C_AGENT,
         );
         let (state, outcome) = crate::extras::git_worktree::try_merge(&info, &target);
         match outcome {
@@ -1381,13 +1389,13 @@ pub async fn run_interactive(
                     Ok(()) => {
                         let _ = renderer.write_line(
                             &format!("merged '{}' into '{}' and cleaned up", info.branch, target),
-                            LineColor::AgentText,
+                            C_AGENT,
                         );
                     }
                     Err(e) => {
                         let _ = renderer.write_line(
                             &format!("merge succeeded but cleanup failed: {}", e),
-                            LineColor::Error,
+                            C_ERROR,
                         );
                     }
                 }
@@ -1395,15 +1403,13 @@ pub async fn run_interactive(
             crate::extras::git_worktree::MergeOutcome::Conflicts(files) => {
                 let _ = renderer.write_line(
                     &format!("merge conflict in {} file(s):", files.len()),
-                    LineColor::Error,
+                    C_ERROR,
                 );
                 for f in &files {
-                    let _ = renderer.write_line(&format!("  {}", f), LineColor::Error);
+                    let _ = renderer.write_line(&format!("  {}", f), C_ERROR);
                 }
-                let _ = renderer.write_line(
-                    "Keep conflict state for manual resolution? [y/N] ",
-                    LineColor::Permission,
-                );
+                let _ = renderer
+                    .write_line("Keep conflict state for manual resolution? [y/N] ", C_PERM);
 
                 let abort = loop {
                     tokio::select! {
@@ -1421,22 +1427,19 @@ pub async fn run_interactive(
 
                 if abort {
                     let _ = crate::extras::git_worktree::cancel_merge(&state);
-                    let _ = renderer.write_line(
-                        "merge aborted, restored original state",
-                        LineColor::AgentText,
-                    );
+                    let _ = renderer.write_line("merge aborted, restored original state", C_AGENT);
                 } else {
                     let _ = renderer.write_line(
                         &format!(
                             "conflict state left in {} for manual resolution",
                             info.main_repo_path.display()
                         ),
-                        LineColor::AgentText,
+                        C_AGENT,
                     );
                 }
             }
             crate::extras::git_worktree::MergeOutcome::Error(e) => {
-                let _ = renderer.write_line(&format!("merge failed: {}", e), LineColor::Error);
+                let _ = renderer.write_line(&format!("merge failed: {}", e), C_ERROR);
             }
         }
     }

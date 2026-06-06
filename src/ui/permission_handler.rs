@@ -1,10 +1,13 @@
+use crossterm::style::Color;
 use tokio::sync::mpsc;
 
 use crate::cli::Cli;
 use crate::event::UserEvent;
 use crate::session::Session;
-use crate::ui::renderer::{LineColor, Renderer};
+use crate::ui::renderer::Renderer;
 use crate::ui::utils::suggest_pattern;
+
+use super::C_PERM;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_permission_request(
@@ -18,17 +21,17 @@ pub async fn handle_permission_request(
 ) -> anyhow::Result<()> {
     *was_reasoning = false;
     if *agent_line_started {
-        renderer.write_line("", LineColor::AgentText)?;
+        renderer.write_line("", Color::White)?;
         *agent_line_started = false;
     }
 
     renderer.write_line(
         &format!("[permission] {}: {}", ask_req.tool, ask_req.input),
-        LineColor::Permission,
+        C_PERM,
     )?;
     renderer.write_line(
         "  (y) allow once  (a) allow always  (n) deny  (ESC) abort",
-        LineColor::Permission,
+        C_PERM,
     )?;
 
     let decision = loop {
@@ -41,7 +44,7 @@ pub async fn handle_permission_request(
                             let pattern = suggest_pattern(&ask_req.tool, &ask_req.input);
                             renderer.write_line(
                                 &format!("  -> will allow: {}", pattern),
-                                LineColor::Success,
+                                Color::Green,
                             )?;
                             break crate::permission::ask::UserDecision::AllowAlways(pattern);
                         }
@@ -62,7 +65,7 @@ pub async fn handle_permission_request(
     if let Some(pattern) = allow_pattern {
         renderer.write_line(
             &format!("  allowed {} {} (saved to session)", ask_req.tool, pattern),
-            LineColor::Success,
+            Color::Green,
         )?;
         session
             .permission_allowlist
