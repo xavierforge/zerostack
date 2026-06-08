@@ -155,6 +155,28 @@ pub enum AnyClient {
     Ollama(ollama::Client),
 }
 
+/// Extra OpenRouter request body params that pin a Claude model to the
+/// Anthropic direct route, or `None` for any non-Claude model.
+///
+/// `cache_control` breakpoints (used for prompt caching) are only honored on
+/// OpenRouter's Anthropic direct route; the Bedrock and Vertex routes silently
+/// drop them. So for Claude models we force `provider.order = ["Anthropic"]`
+/// (keeping `allow_fallbacks: true` so the request still succeeds if Anthropic
+/// is momentarily unavailable). Every other OpenRouter model caches
+/// automatically and is left untouched.
+///
+/// OpenRouter namespaces Claude under `anthropic/`, optionally with a leading
+/// `~` marking a floating "-latest" alias (e.g. `~anthropic/claude-sonnet-latest`).
+/// The `~` is part of the real slug, so strip it before matching.
+fn openrouter_anthropic_routing(model_id: &str) -> Option<serde_json::Value> {
+    let slug = model_id.strip_prefix('~').unwrap_or(model_id);
+    slug.starts_with("anthropic/").then(|| {
+        serde_json::json!({
+            "provider": { "order": ["Anthropic"], "allow_fallbacks": true }
+        })
+    })
+}
+
 impl AnyClient {
     #[allow(dead_code)]
     pub fn provider_name(&self) -> &'static str {
@@ -170,9 +192,14 @@ impl AnyClient {
     pub fn completion_model(&self, name: impl Into<String>) -> AnyModel {
         let name = name.into();
         match self {
-            AnyClient::OpenRouter(c) => AnyModel::OpenRouter(c.completion_model(name)),
+            AnyClient::OpenRouter(c) => {
+                let extra = openrouter_anthropic_routing(&name);
+                AnyModel::OpenRouter(c.completion_model(name).with_prompt_caching(), extra)
+            }
             AnyClient::OpenAI(c) => AnyModel::OpenAI(c.completion_model(name)),
-            AnyClient::Anthropic(c) => AnyModel::Anthropic(c.completion_model(name)),
+            AnyClient::Anthropic(c) => {
+                AnyModel::Anthropic(c.completion_model(name).with_prompt_caching())
+            }
             AnyClient::Gemini(c) => AnyModel::Gemini(c.completion_model(name)),
             AnyClient::Ollama(c) => AnyModel::Ollama(c.completion_model(name)),
         }
@@ -339,7 +366,7 @@ pub async fn list_models_manual(
 
 async fn summarize_with_model(model: AnyModel, prompt: String) -> anyhow::Result<String> {
     match model {
-        AnyModel::OpenRouter(m) => run_summarizer(m, prompt).await,
+        AnyModel::OpenRouter(m, _) => run_summarizer(m, prompt).await,
         AnyModel::OpenAI(m) => match m {
             OpenAiModel::Responses(m) => run_summarizer(m, prompt).await,
             OpenAiModel::Completions(m) => run_summarizer(m, prompt).await,
@@ -401,7 +428,15 @@ fn serialize_conversation(messages: &[SessionMessage]) -> String {
 }
 
 pub enum AnyModel {
-    OpenRouter(openrouter::completion::CompletionModel),
+    /// The second field carries provider-specific extra body params. For
+    /// `anthropic/*` models routed via OpenRouter it pins `provider.order` to
+    /// the Anthropic direct route, the only route that honors `cache_control`
+    /// breakpoints (Bedrock/Vertex silently drop them). `None` for every other
+    /// OpenRouter model, which caches automatically and needs no routing.
+    OpenRouter(
+        openrouter::completion::CompletionModel,
+        Option<serde_json::Value>,
+    ),
     OpenAI(OpenAiModel),
     Anthropic(anthropic::completion::CompletionModel),
     Gemini(gemini::completion::CompletionModel),
@@ -686,7 +721,18 @@ fn build_ollama_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyC
 }
 
 fn build_openrouter_client(key: &str, base_url: Option<&str>) -> anyhow::Result<AnyClient> {
-    build_provider_client!(openrouter::Client, OpenRouter, key, base_url)
+    // Expanded from `build_provider_client!` so we can chain OpenRouter's
+    // builder-only app-identity calls: these set `X-OpenRouter-Title` /
+    // `HTTP-Referer` / `X-OpenRouter-Categories` so zerostack's traffic is
+    // attributed in OpenRouter's dashboards instead of showing up anonymously.
+    let builder = match base_url {
+        Some(u) => openrouter::Client::builder().api_key(key).base_url(u),
+        None => openrouter::Client::builder().api_key(key),
+    };
+    let builder = builder
+        .with_app_identity("zerostack", "https://github.com/gi-dellav/zerostack")
+        .with_app_categories(&["cli-agent", "coding"]);
+    Ok(AnyClient::OpenRouter(builder.build()?))
 }
 
 /// Builds an OpenAiModel (Responses / Completions) into the matching OpenAiAgent.
@@ -713,6 +759,7 @@ async fn build_openai_agent(
                 ask_tx,
                 sandbox,
                 reasoning_enabled,
+                None,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -728,6 +775,7 @@ async fn build_openai_agent(
                 ask_tx,
                 sandbox,
                 reasoning_enabled,
+                None,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -749,7 +797,7 @@ pub async fn build_agent(
     #[cfg(feature = "mcp")] mcp_manager: Option<&McpClientManager>,
 ) -> AnyAgent {
     match model {
-        AnyModel::OpenRouter(m) => AnyAgent::OpenRouter(
+        AnyModel::OpenRouter(m, extra) => AnyAgent::OpenRouter(
             builder::build_agent_inner(
                 m,
                 cli,
@@ -759,6 +807,7 @@ pub async fn build_agent(
                 ask_tx,
                 sandbox.clone(),
                 reasoning_enabled,
+                extra,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -789,6 +838,7 @@ pub async fn build_agent(
                 ask_tx,
                 sandbox.clone(),
                 reasoning_enabled,
+                None,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -804,6 +854,7 @@ pub async fn build_agent(
                 ask_tx,
                 sandbox.clone(),
                 reasoning_enabled,
+                None,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -819,6 +870,7 @@ pub async fn build_agent(
                 ask_tx,
                 sandbox,
                 reasoning_enabled,
+                None,
                 #[cfg(feature = "mcp")]
                 mcp_manager,
             )
@@ -838,7 +890,7 @@ pub fn build_btw_agent(
     reasoning_enabled: bool,
 ) -> AnyAgent {
     match model {
-        AnyModel::OpenRouter(m) => AnyAgent::OpenRouter(builder::build_btw_agent_inner(
+        AnyModel::OpenRouter(m, extra) => AnyAgent::OpenRouter(builder::build_btw_agent_inner(
             m,
             cli,
             cfg,
@@ -846,6 +898,7 @@ pub fn build_btw_agent(
             permission,
             ask_tx,
             reasoning_enabled,
+            extra,
         )),
         AnyModel::OpenAI(m) => AnyAgent::OpenAI(match m {
             OpenAiModel::Responses(m) => OpenAiAgent::Responses(builder::build_btw_agent_inner(
@@ -856,6 +909,7 @@ pub fn build_btw_agent(
                 permission,
                 ask_tx,
                 reasoning_enabled,
+                None,
             )),
             OpenAiModel::Completions(m) => {
                 OpenAiAgent::Completions(builder::build_btw_agent_inner(
@@ -866,6 +920,7 @@ pub fn build_btw_agent(
                     permission,
                     ask_tx,
                     reasoning_enabled,
+                    None,
                 ))
             }
         }),
@@ -877,6 +932,7 @@ pub fn build_btw_agent(
             permission,
             ask_tx,
             reasoning_enabled,
+            None,
         )),
         AnyModel::Gemini(m) => AnyAgent::Gemini(builder::build_btw_agent_inner(
             m,
@@ -886,6 +942,7 @@ pub fn build_btw_agent(
             permission,
             ask_tx,
             reasoning_enabled,
+            None,
         )),
         AnyModel::Ollama(m) => AnyAgent::Ollama(builder::build_btw_agent_inner(
             m,
@@ -895,6 +952,59 @@ pub fn build_btw_agent(
             permission,
             ask_tx,
             reasoning_enabled,
+            None,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openrouter_anthropic_routing;
+
+    #[test]
+    fn pins_anthropic_namespaced_openrouter_models() {
+        for id in [
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-3.5-haiku",
+        ] {
+            let extra = openrouter_anthropic_routing(id).expect("should pin {id}");
+            assert_eq!(extra["provider"]["order"][0], "Anthropic");
+            assert_eq!(extra["provider"]["allow_fallbacks"], true);
+        }
+    }
+
+    #[test]
+    fn pins_tilde_prefixed_latest_aliases() {
+        // OpenRouter floating aliases carry a leading `~` that is part of the
+        // real slug; they must still be pinned to the Anthropic route.
+        for id in [
+            "~anthropic/claude-sonnet-latest",
+            "~anthropic/claude-opus-latest",
+            "~anthropic/claude-haiku-latest",
+        ] {
+            assert!(
+                openrouter_anthropic_routing(id).is_some(),
+                "{id} should be pinned"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_non_anthropic_openrouter_models_untouched() {
+        for id in [
+            "openai/gpt-4o",
+            "deepseek/deepseek-chat",
+            "google/gemini-2.5-pro",
+            "openrouter/auto",
+            // A non-Anthropic model that merely mentions claude in its path
+            // is not in the anthropic namespace and must not be pinned.
+            "somegateway/not-claude",
+        ] {
+            assert!(
+                openrouter_anthropic_routing(id).is_none(),
+                "{id} should not be pinned"
+            );
+        }
     }
 }

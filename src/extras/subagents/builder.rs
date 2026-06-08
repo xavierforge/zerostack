@@ -8,6 +8,8 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
     model: M,
     max_turns: usize,
     max_text_file_size: u64,
+    // OpenRouter `provider.order` pin for `anthropic/*` (see `AnyClient::completion_model`).
+    additional_params: Option<serde_json::Value>,
     #[cfg(feature = "archmd")] architecture: Option<&str>,
 ) -> Agent<M> {
     let mut preamble = prompt::explore_prompt();
@@ -42,11 +44,16 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
         Box::new(crate::extras::memory::MemorySearch::new(None, None)),
     ];
 
-    AgentBuilder::new(model)
+    let mut builder = AgentBuilder::new(model)
         .preamble(&preamble)
         .default_max_turns(max_turns)
-        .tools(tools)
-        .build()
+        .tools(tools);
+
+    if let Some(params) = additional_params {
+        builder = builder.additional_params(params);
+    }
+
+    builder.build()
 }
 
 pub(crate) async fn build_explore_agent(
@@ -59,10 +66,11 @@ pub(crate) async fn build_explore_agent(
     #[cfg(feature = "archmd")]
     let arch_ref = architecture.as_deref();
     match model {
-        AnyModel::OpenRouter(m) => AnyAgent::OpenRouter(build_explore_agent_inner(
+        AnyModel::OpenRouter(m, extra) => AnyAgent::OpenRouter(build_explore_agent_inner(
             m,
             max_turns,
             max_text_file_size,
+            extra,
             #[cfg(feature = "archmd")]
             arch_ref,
         )),
@@ -71,6 +79,7 @@ pub(crate) async fn build_explore_agent(
                 m,
                 max_turns,
                 max_text_file_size,
+                None,
                 #[cfg(feature = "archmd")]
                 arch_ref,
             )),
@@ -78,6 +87,7 @@ pub(crate) async fn build_explore_agent(
                 m,
                 max_turns,
                 max_text_file_size,
+                None,
                 #[cfg(feature = "archmd")]
                 arch_ref,
             )),
@@ -86,6 +96,7 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            None,
             #[cfg(feature = "archmd")]
             arch_ref,
         )),
@@ -93,6 +104,7 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            None,
             #[cfg(feature = "archmd")]
             arch_ref,
         )),
@@ -100,6 +112,7 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            None,
             #[cfg(feature = "archmd")]
             arch_ref,
         )),

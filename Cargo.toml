@@ -28,7 +28,7 @@ archmd = []
 multithread = ["tokio/rt-multi-thread"]
 
 [dependencies]
-rig = { version = "0.37", features = ["rmcp"] }
+rig = { version = "0.38", features = ["rmcp"] }
 rmcp = { version = "1.7", optional = true, default-features = false, features = [
     "client",
     "transport-child-process",
