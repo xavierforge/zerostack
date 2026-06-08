@@ -252,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
             sub_client,
             sub_model.to_string(),
             task_max_turns,
+            cfg.clone(),
             #[cfg(feature = "archmd")]
             context.architecture.clone(),
         );
@@ -686,32 +687,49 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
         }
     };
 
-    print_section(
-        "Limits",
-        &[
-            ("max-tokens", max_tokens.to_string()),
-            ("max-agent-turns", max_agent_turns.to_string()),
-            ("context-window", context_window.to_string()),
-            ("reserve-tokens", cfg.resolve_reserve_tokens().to_string()),
-            ("max-read-lines", cfg.resolve_max_read_lines().to_string()),
-            (
-                "max-bash-output-lines",
-                fmt_opt(cfg.resolve_max_bash_output_lines()),
-            ),
-            (
-                "max-grep-results",
-                cfg.resolve_max_grep_results().to_string(),
-            ),
-            (
-                "max-find-results",
-                cfg.resolve_max_find_results().to_string(),
-            ),
-            (
-                "max-list-dir-entries",
-                fmt_opt(cfg.resolve_max_list_dir_entries()),
-            ),
-        ],
-    );
+    let mut limit_entries: Vec<(&str, String)> = vec![
+        ("max-tokens", max_tokens.to_string()),
+        ("max-agent-turns", max_agent_turns.to_string()),
+        ("context-window", context_window.to_string()),
+        ("reserve-tokens", cfg.resolve_reserve_tokens().to_string()),
+        ("max-read-lines", cfg.resolve_max_read_lines().to_string()),
+        (
+            "max-bash-output-lines",
+            fmt_opt(cfg.resolve_max_bash_output_lines()),
+        ),
+        (
+            "max-grep-results",
+            cfg.resolve_max_grep_results().to_string(),
+        ),
+        (
+            "max-find-results",
+            cfg.resolve_max_find_results().to_string(),
+        ),
+        (
+            "max-list-dir-entries",
+            fmt_opt(cfg.resolve_max_list_dir_entries()),
+        ),
+    ];
+    #[cfg(feature = "subagents")]
+    {
+        limit_entries.push((
+            "subagent-max-read-lines",
+            cfg.resolve_subagent_max_read_lines().to_string(),
+        ));
+        limit_entries.push((
+            "subagent-max-grep-results",
+            cfg.resolve_subagent_max_grep_results().to_string(),
+        ));
+        limit_entries.push((
+            "subagent-max-find-results",
+            cfg.resolve_subagent_max_find_results().to_string(),
+        ));
+        limit_entries.push((
+            "subagent-max-list-dir-entries",
+            fmt_opt(cfg.resolve_subagent_max_list_dir_entries()),
+        ));
+    }
+    print_section("Limits", &limit_entries);
 
     print_section(
         "Behavior",

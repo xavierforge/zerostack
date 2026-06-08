@@ -8,6 +8,10 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
     model: M,
     max_turns: usize,
     max_text_file_size: u64,
+    max_read_lines: u64,
+    max_grep_results: u64,
+    max_find_results: u64,
+    max_list_dir_entries: Option<u64>,
     // OpenRouter `provider.order` pin for `anthropic/*` (see `AnyClient::completion_model`).
     additional_params: Option<serde_json::Value>,
     #[cfg(feature = "archmd")] architecture: Option<&str>,
@@ -22,22 +26,16 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
         preamble.push_str(arch);
     }
 
-    // Subagents use the same built-in defaults as the main agent's
-    // `resolve_*` methods (2000 lines, 200 results, no list_dir cap) so a
-    // user who hasn't customized config sees identical subagent behaviour.
-    // Plumbing the user's resolved config through to subagents could be a
-    // future change if local-LLM operators want their tight limits to
-    // apply to subagent calls too.
     let tools: Vec<Box<dyn rig::tool::ToolDyn>> = vec![
         Box::new(tools::ReadTool::new(
             None,
             None,
             Some(max_text_file_size),
-            2000,
+            max_read_lines,
         )),
-        Box::new(tools::GrepTool::new(None, None, 200)),
-        Box::new(tools::FindFilesTool::new(None, None, 200)),
-        Box::new(tools::ListDirTool::new(None, None, None)),
+        Box::new(tools::GrepTool::new(None, None, max_grep_results)),
+        Box::new(tools::FindFilesTool::new(None, None, max_find_results)),
+        Box::new(tools::ListDirTool::new(None, None, max_list_dir_entries)),
         #[cfg(feature = "memory")]
         Box::new(crate::extras::memory::MemoryRead::new(None, None)),
         #[cfg(feature = "memory")]
@@ -59,10 +57,14 @@ fn build_explore_agent_inner<M: CompletionModel + 'static>(
 pub(crate) async fn build_explore_agent(
     model: AnyModel,
     max_turns: usize,
+    cfg: &crate::config::Config,
     #[cfg(feature = "archmd")] architecture: Option<String>,
 ) -> AnyAgent {
-    // Use a reasonable default file size for subagent reads
-    let max_text_file_size = 10 * 1024 * 1024;
+    let max_text_file_size = cfg.max_text_file_size.unwrap_or(10 * 1024 * 1024);
+    let max_read_lines = cfg.resolve_subagent_max_read_lines();
+    let max_grep_results = cfg.resolve_subagent_max_grep_results();
+    let max_find_results = cfg.resolve_subagent_max_find_results();
+    let max_list_dir_entries = cfg.resolve_subagent_max_list_dir_entries();
     #[cfg(feature = "archmd")]
     let arch_ref = architecture.as_deref();
     match model {
@@ -70,6 +72,10 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            max_read_lines,
+            max_grep_results,
+            max_find_results,
+            max_list_dir_entries,
             extra,
             #[cfg(feature = "archmd")]
             arch_ref,
@@ -79,6 +85,10 @@ pub(crate) async fn build_explore_agent(
                 m,
                 max_turns,
                 max_text_file_size,
+                max_read_lines,
+                max_grep_results,
+                max_find_results,
+                max_list_dir_entries,
                 None,
                 #[cfg(feature = "archmd")]
                 arch_ref,
@@ -87,6 +97,10 @@ pub(crate) async fn build_explore_agent(
                 m,
                 max_turns,
                 max_text_file_size,
+                max_read_lines,
+                max_grep_results,
+                max_find_results,
+                max_list_dir_entries,
                 None,
                 #[cfg(feature = "archmd")]
                 arch_ref,
@@ -96,6 +110,10 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            max_read_lines,
+            max_grep_results,
+            max_find_results,
+            max_list_dir_entries,
             None,
             #[cfg(feature = "archmd")]
             arch_ref,
@@ -104,6 +122,10 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            max_read_lines,
+            max_grep_results,
+            max_find_results,
+            max_list_dir_entries,
             None,
             #[cfg(feature = "archmd")]
             arch_ref,
@@ -112,6 +134,10 @@ pub(crate) async fn build_explore_agent(
             m,
             max_turns,
             max_text_file_size,
+            max_read_lines,
+            max_grep_results,
+            max_find_results,
+            max_list_dir_entries,
             None,
             #[cfg(feature = "archmd")]
             arch_ref,

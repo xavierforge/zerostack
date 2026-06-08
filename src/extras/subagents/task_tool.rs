@@ -86,8 +86,14 @@ editing in a known location, grepping for a literal you will act on immediately.
         )
         .await?;
 
-        let (client, model_name, max_turns) =
-            with_config(|cfg| (cfg.client.clone(), cfg.model_name.clone(), cfg.max_turns));
+        let (client, model_name, max_turns, config) = with_config(|cfg| {
+            (
+                cfg.client.clone(),
+                cfg.model_name.clone(),
+                cfg.max_turns,
+                cfg.config.clone(),
+            )
+        });
 
         let subagent_event_tx = clone_subagent_event_tx();
 
@@ -107,9 +113,11 @@ editing in a known location, grepping for a literal you will act on immediately.
             let model = client.completion_model(model_name.clone());
             let event_tx = subagent_event_tx.clone();
             let architecture = architecture.clone();
+            let config = config.clone();
             let join_handle = tokio::spawn(async move {
                 let work = async {
-                    let agent = builder::build_explore_agent(model, max_turns, architecture).await;
+                    let agent =
+                        builder::build_explore_agent(model, max_turns, &config, architecture).await;
                     agent
                         .run_subagent(&prompt_text, max_turns, event_tx.as_ref())
                         .await

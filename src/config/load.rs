@@ -140,6 +140,12 @@ fn rich_default_config() -> Config {
     cfg.default_prompt = Some(CompactString::new("code"));
     cfg.show_tool_details = Some(ShowToolDetails::Lines(1));
     cfg.subagent_model = Some(CompactString::new("deepseek-v4-flash"));
+    #[cfg(feature = "subagents")]
+    {
+        cfg.subagent_max_read_lines = Some(2000);
+        cfg.subagent_max_grep_results = Some(200);
+        cfg.subagent_max_find_results = Some(200);
+    }
     cfg
 }
 

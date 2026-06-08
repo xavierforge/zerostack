@@ -17,7 +17,7 @@ use crate::extras::mcp::config::McpServerConfig;
 #[cfg(feature = "acp")]
 use crate::extras::acp::config::AcpServerConfig;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,11 +42,6 @@ pub struct Config {
     pub max_agent_turns: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_text_file_size: Option<u64>,
-    // Tool output limits. `None` for `max_bash_output_lines` means "no
-    // truncation" — matches the historical behaviour. The other four have
-    // non-None defaults so existing users see no change unless they set
-    // these explicitly. Local-LLM users can tighten all five via a separate
-    // `local-limits-config.toml`; see the loader.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_read_lines: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +52,20 @@ pub struct Config {
     pub max_find_results: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_list_dir_entries: Option<u64>,
+    // --- Subagent tool limits (applied when subagents spawn) ---
+    #[cfg(feature = "subagents")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_max_read_lines: Option<u64>,
+    #[cfg(feature = "subagents")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_max_grep_results: Option<u64>,
+    #[cfg(feature = "subagents")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_max_find_results: Option<u64>,
+    #[cfg(feature = "subagents")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_max_list_dir_entries: Option<u64>,
+    // --- End subagent limits ---
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -184,6 +193,26 @@ impl Config {
 
     pub fn resolve_max_list_dir_entries(&self) -> Option<u64> {
         self.max_list_dir_entries.or(Some(150))
+    }
+
+    #[cfg(feature = "subagents")]
+    pub fn resolve_subagent_max_read_lines(&self) -> u64 {
+        self.subagent_max_read_lines.unwrap_or(2000)
+    }
+
+    #[cfg(feature = "subagents")]
+    pub fn resolve_subagent_max_grep_results(&self) -> u64 {
+        self.subagent_max_grep_results.unwrap_or(200)
+    }
+
+    #[cfg(feature = "subagents")]
+    pub fn resolve_subagent_max_find_results(&self) -> u64 {
+        self.subagent_max_find_results.unwrap_or(200)
+    }
+
+    #[cfg(feature = "subagents")]
+    pub fn resolve_subagent_max_list_dir_entries(&self) -> Option<u64> {
+        self.subagent_max_list_dir_entries
     }
 
     pub fn resolve_always_show_welcome(&self) -> bool {

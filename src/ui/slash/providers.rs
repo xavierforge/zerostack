@@ -472,6 +472,7 @@ async fn model_for_subagent(
     let _agent = crate::extras::subagents::builder::build_explore_agent(
         model,
         max_turns,
+        ctx.cfg,
         #[cfg(feature = "archmd")]
         None,
     )

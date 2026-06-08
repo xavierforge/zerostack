@@ -13,6 +13,7 @@ pub(crate) struct SubagentConfig {
     pub client: AnyClient,
     pub model_name: String,
     pub max_turns: usize,
+    pub config: crate::config::Config,
     #[cfg(feature = "archmd")]
     pub architecture: Option<String>,
 }
@@ -46,6 +47,7 @@ pub fn init(
     client: AnyClient,
     model_name: String,
     max_turns: usize,
+    config: crate::config::Config,
     #[cfg(feature = "archmd")] architecture: Option<String>,
 ) {
     let mut guard = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
@@ -53,6 +55,7 @@ pub fn init(
         client,
         model_name,
         max_turns,
+        config,
         #[cfg(feature = "archmd")]
         architecture,
     });
