@@ -70,6 +70,13 @@ pub struct Config {
     pub compact_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always_show_welcome: Option<bool>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "auto-update-prompts"
+    )]
+    pub auto_update_prompts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "auto-update-themes")]
+    pub auto_update_themes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_providers: Option<HashMap<String, types::CustomProviderConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]

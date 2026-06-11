@@ -342,39 +342,59 @@ async fn main() -> anyhow::Result<()> {
     if version_changed && is_interactive {
         let prompts_dir = context::prompts::global_dir();
         let themes_dir = context::themes::global_dir();
-        let auto_prompts = !prompts_dir.exists();
-        let auto_themes = !themes_dir.exists();
         let mut regenerated = false;
 
-        if auto_prompts {
-            let _ = context::prompts::regen();
-            eprintln!("Prompts regenerated (first launch).");
-            regenerated = true;
-        } else {
-            let mut input = String::new();
-            eprint!("Regenerate prompts? [y/N] ");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            std::io::stdin().read_line(&mut input)?;
-            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+        // Prompts: check config/CLI override, then fall back to asking or auto-regen
+        match cli.resolve_auto_update_prompts(&cfg) {
+            Some(true) => {
                 let _ = context::prompts::regen();
                 eprintln!("Prompts regenerated.");
                 regenerated = true;
             }
+            Some(false) => { /* skip: user explicitly denied */ }
+            None => {
+                if !prompts_dir.exists() {
+                    let _ = context::prompts::regen();
+                    eprintln!("Prompts regenerated (first launch).");
+                    regenerated = true;
+                } else {
+                    let mut input = String::new();
+                    eprint!("Regenerate prompts? [y/N] ");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    std::io::stdin().read_line(&mut input)?;
+                    if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                        let _ = context::prompts::regen();
+                        eprintln!("Prompts regenerated.");
+                        regenerated = true;
+                    }
+                }
+            }
         }
 
-        if auto_themes {
-            let _ = context::themes::regen();
-            eprintln!("Themes regenerated (first launch).");
-            regenerated = true;
-        } else {
-            let mut input = String::new();
-            eprint!("Regenerate themes? [y/N] ");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            std::io::stdin().read_line(&mut input)?;
-            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+        // Themes: check config/CLI override, then fall back to asking or auto-regen
+        match cli.resolve_auto_update_themes(&cfg) {
+            Some(true) => {
                 let _ = context::themes::regen();
                 eprintln!("Themes regenerated.");
                 regenerated = true;
+            }
+            Some(false) => { /* skip: user explicitly denied */ }
+            None => {
+                if !themes_dir.exists() {
+                    let _ = context::themes::regen();
+                    eprintln!("Themes regenerated (first launch).");
+                    regenerated = true;
+                } else {
+                    let mut input = String::new();
+                    eprint!("Regenerate themes? [y/N] ");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    std::io::stdin().read_line(&mut input)?;
+                    if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                        let _ = context::themes::regen();
+                        eprintln!("Themes regenerated.");
+                        regenerated = true;
+                    }
+                }
             }
         }
 
