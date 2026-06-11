@@ -62,6 +62,7 @@ pub struct ContextFiles {
     pub current_theme_name: Option<String>,
     pub extra_files: Vec<std::path::PathBuf>,
     pub one_shot_restore: Option<String>,
+    pub chain_declined: Vec<String>,
     #[cfg(feature = "memory")]
     pub memory: Option<String>,
     #[cfg(feature = "archmd")]
@@ -114,6 +115,7 @@ pub fn load(no_context_files: bool) -> ContextFiles {
         current_theme_name: theme_name,
         extra_files: Vec::new(),
         one_shot_restore: None,
+        chain_declined: Vec::new(),
         #[cfg(feature = "memory")]
         memory,
         #[cfg(feature = "archmd")]

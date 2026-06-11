@@ -873,9 +873,22 @@ pub async fn run_interactive(
                                     }
                                     crate::extras::chain::ChainDecision::Decline => {
                                         renderer.write_line(
-                                            "chain skipped",
+                                            "chain declined — won't ask again this session",
                                             C_AGENT,
                                         )?;
+                                        // Remember so we don't ask again until /clear
+                                        if let Some(ref name) =
+                                            context.current_prompt_name
+                                        {
+                                            if !context
+                                                .chain_declined
+                                                .contains(name)
+                                            {
+                                                context
+                                                    .chain_declined
+                                                    .push(name.clone());
+                                            }
+                                        }
                                         refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                         continue;
                                     }
@@ -1434,9 +1447,11 @@ pub async fn run_interactive(
                 }
                 // Chain-of-prompts: after the agent finishes, check if the
                 // current prompt is a chainable phase and trigger the prompt.
+                // Skip phases that were declined earlier in this session.
                 if !is_running
                     && chain_pending.is_none()
                     && let Some(ref name) = context.current_prompt_name
+                    && !context.chain_declined.contains(name)
                     && let Some(phase) =
                         crate::extras::chain::ChainPhase::from_prompt_name(name)
                     && let Some(ref chain_cfg) = cfg.chain
