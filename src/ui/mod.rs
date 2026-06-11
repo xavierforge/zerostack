@@ -1002,97 +1002,88 @@ pub async fn run_interactive(
                                         let _ = crate::session::storage::save_session(session);
                                     }
                                     #[cfg(feature = "git-worktree")]
-                                    Err(e) if e.to_string().starts_with("DEFER_WT_MERGE\u{1F}") => {
-                                        let err_msg = e.to_string();
-                                        let parts: Vec<&str> = err_msg.strip_prefix("DEFER_WT_MERGE\u{1F}").unwrap_or("").splitn(5, '\u{1F}').collect();
-                                        if parts.len() == 5 {
-                                            let branch = parts[0];
-                                            let target = parts[1];
-                                            let main_path = parts[2].to_string();
-                                            let wt_path = parts[3];
-                                            let _repo_name = parts[4];
-                                            #[cfg(feature = "git-worktree")]
-                                            let force_flag = cli.resolve_wt_force(cfg);
-                                            #[cfg(not(feature = "git-worktree"))]
-                                            let force_flag = false;
-                                            let wt_remove_flag = if force_flag { "--force" } else { "" };
-                                            let prompt = format!(
-                                                "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
-                                                 Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
-                                                 Follow these steps:\n\
-                                                 1. cd {main_path}\n\
-                                                 2. git fetch --all\n\
-                                                 3. git checkout {target}\n\
-                                                 4. git pull --no-edit\n\
-                                                 5. git merge --no-edit {branch}\n\n\
-                                                 After step 5, CHECK THE EXIT CODE and output.\n\
-                                                 - If the merge Succeeded (no conflicts), continue to step 6.\n\
-                                                 - If there is a MERGE CONFLICT:\n\
-                                                   a. Run: git diff --name-only --diff-filter=U\n\
-                                                   b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
-                                                   c. Ask the user what to do. Give them these options:\n\
-                                                      - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
-                                                      - 'resolve <file>': you help them fix the conflict in that file.\n\
-                                                      - 'leave': leave the conflict state as-is for manual resolution.\n\
-                                                   d. WAIT for the user's response before continuing.\n\
-                                                   e. Follow their instruction.\n\n\
-                                                 6. If the merge succeeded (or conflicts were resolved):\n\
-                                                   - git worktree remove {wt_remove_flag} {wt_path}\n\
-                                                   - git branch -D {branch}\n\n\
-                                                 7. cd {main_path} and report completion.\n\n\
-                                                 Important: Do NOT skip any step. Always check for conflicts after merge.",
-                                                branch = branch, wt_path = wt_path, target = target, main_path = main_path,
-                                                wt_remove_flag = wt_remove_flag
-                                            );
-                                            session.add_message(MessageRole::User, &prompt);
-                                            let history = crate::agent::runner::convert_history(session);
-                                            #[cfg(feature = "mcp")]
-                                            let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
-                                            ensure_agent(
-                                                &mut agent, &client, session, cli, cfg, context,
-                                                &permission, &ask_tx, &sandbox, reasoning_enabled,
-                                                #[cfg(feature = "mcp")] mcp_ref,
-                                            ).await;
-                                            let runner = agent.as_ref().unwrap().clone().spawn_runner(prompt, history);
-                                            agent_rx = Some(runner.event_rx);
-                                            main_abort = Some(runner.abort_handle);
-                                            is_running = true;
-                                            if let Some(ss) = status_signals.as_ref() {
-                                                ss.send_start();
+                                    Err(e) if e.downcast_ref::<crate::extras::git_worktree::DeferredWorktreeAction>().is_some() => {
+                                        let action = e.downcast_ref::<crate::extras::git_worktree::DeferredWorktreeAction>().unwrap();
+                                        match action {
+                                            crate::extras::git_worktree::DeferredWorktreeAction::Merge { branch, target, main_path, wt_path } => {
+                                                #[cfg(feature = "git-worktree")]
+                                                let force_flag = cli.resolve_wt_force(cfg);
+                                                #[cfg(not(feature = "git-worktree"))]
+                                                let force_flag = false;
+                                                let wt_remove_flag = if force_flag { "--force" } else { "" };
+                                                let branch_delete_flag = if force_flag { "-D" } else { "-d" };
+                                                let prompt = format!(
+                                                    "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
+                                                     Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
+                                                     Follow these steps:\n\
+                                                     1. cd {main_path}\n\
+                                                     2. git fetch --all\n\
+                                                     3. git checkout {target}\n\
+                                                     4. git pull --no-edit\n\
+                                                     5. git merge --no-edit {branch}\n\n\
+                                                     After step 5, CHECK THE EXIT CODE and output.\n\
+                                                     - If the merge Succeeded (no conflicts), continue to step 6.\n\
+                                                     - If there is a MERGE CONFLICT:\n\
+                                                       a. Run: git diff --name-only --diff-filter=U\n\
+                                                       b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
+                                                       c. Ask the user what to do. Give them these options:\n\
+                                                          - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
+                                                          - 'resolve <file>': you help them fix the conflict in that file.\n\
+                                                          - 'leave': leave the conflict state as-is for manual resolution.\n\
+                                                       d. WAIT for the user's response before continuing.\n\
+                                                       e. Follow their instruction.\n\n\
+                                                     6. If the merge succeeded (or conflicts were resolved):\n\
+                                                       - git worktree remove {wt_remove_flag} {wt_path}\n\
+                                                       - git branch {branch_delete_flag} {branch}\n\n\
+                                                     7. cd {main_path} and report completion.\n\n\
+                                                     Important: Do NOT skip any step. Always check for conflicts after merge.",
+                                                    branch = branch, wt_path = wt_path, target = target, main_path = main_path,
+                                                    wt_remove_flag = wt_remove_flag, branch_delete_flag = branch_delete_flag
+                                                );
+                                                session.add_message(MessageRole::User, &prompt);
+                                                let history = crate::agent::runner::convert_history(session);
+                                                #[cfg(feature = "mcp")]
+                                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                                ensure_agent(
+                                                    &mut agent, &client, session, cli, cfg, context,
+                                                    &permission, &ask_tx, &sandbox, reasoning_enabled,
+                                                    #[cfg(feature = "mcp")] mcp_ref,
+                                                ).await;
+                                                let runner = agent.as_ref().unwrap().clone().spawn_runner(prompt, history);
+                                                agent_rx = Some(runner.event_rx);
+                                                main_abort = Some(runner.abort_handle);
+                                                is_running = true;
+                                                if let Some(ss) = status_signals.as_ref() {
+                                                    ss.send_start();
+                                                }
+                                                wt_return_path = Some((main_path.clone(), wt_path.clone(), branch.clone(), force_flag));
                                             }
-                                            wt_return_path = Some((main_path, wt_path.to_string(), branch.to_string(), force_flag));
-                                        }
-                                    }
-                                    #[cfg(feature = "git-worktree")]
-                                    Err(e) if e.to_string().starts_with("DEFER_WT_EXIT\u{1F}") => {
-                                        let err_msg = e.to_string();
-                                        let parts: Vec<&str> = err_msg.strip_prefix("DEFER_WT_EXIT\u{1F}").unwrap_or("").splitn(2, '\u{1F}').collect();
-                                        if parts.len() == 2 {
-                                            let main_path = parts[0];
-                                            std::env::set_current_dir(main_path)
-                                                .map_err(|e| anyhow::anyhow!("failed to change directory: {}", e))?;
-                                            session.working_dir = compact_str::CompactString::new(main_path);
-                                            context.reload();
-                                            apply_current_prompt_mode(context, &permission);
-                                            #[cfg(feature = "mcp")]
-                                            let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
-                                            let model = client.completion_model(session.model.to_string());
-                                            agent = Some(crate::provider::build_agent(
-                                                model,
-                                                cli,
-                                                cfg,
-                                                context,
-                                                permission.clone(),
-                                                ask_tx.clone(),
-                                                sandbox.clone(),
-                                                reasoning_enabled,
-                                                #[cfg(feature = "mcp")] mcp_ref,
-                                            ).await);
-                                            render_session(&mut renderer, session, cli, cfg, context)?;
-                                            renderer.write_line(
-                                                &format!("returned to main repo at {}", main_path),
-                                                C_AGENT,
-                                            )?;
+                                            crate::extras::git_worktree::DeferredWorktreeAction::Exit { main_path } => {
+                                                std::env::set_current_dir(main_path)
+                                                    .map_err(|e| anyhow::anyhow!("failed to change directory: {}", e))?;
+                                                session.working_dir = compact_str::CompactString::new(main_path);
+                                                context.reload();
+                                                apply_current_prompt_mode(context, &permission);
+                                                #[cfg(feature = "mcp")]
+                                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                                let model = client.completion_model(session.model.to_string());
+                                                agent = Some(crate::provider::build_agent(
+                                                    model,
+                                                    cli,
+                                                    cfg,
+                                                    context,
+                                                    permission.clone(),
+                                                    ask_tx.clone(),
+                                                    sandbox.clone(),
+                                                    reasoning_enabled,
+                                                    #[cfg(feature = "mcp")] mcp_ref,
+                                                ).await);
+                                                render_session(&mut renderer, session, cli, cfg, context)?;
+                                                renderer.write_line(
+                                                    &format!("returned to main repo at {}", main_path),
+                                                    C_AGENT,
+                                                )?;
+                                            }
                                         }
                                     }
                                     Err(e) if e.to_string().starts_with("DEFER_INIT:") => {
