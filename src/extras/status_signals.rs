@@ -37,6 +37,18 @@ impl StatusSignals {
 
     #[cfg(not(unix))]
     pub fn send_stop(&self) {}
+
+    #[cfg(unix)]
+    pub fn send_git_conflict(&self) {
+        let _ = (|| -> std::io::Result<()> {
+            let mut stream = UnixStream::connect(&self.path)?;
+            stream.write_all(b"git-conflict\n")?;
+            Ok(())
+        })();
+    }
+
+    #[cfg(not(unix))]
+    pub fn send_git_conflict(&self) {}
 }
 
 #[cfg(all(test, unix))]
@@ -92,5 +104,19 @@ mod tests {
         let ss = StatusSignals::new("/tmp/definitely_nonexistent_status_socket_12345".to_string());
         ss.send_start();
         ss.send_stop();
+        ss.send_git_conflict();
+    }
+
+    #[test]
+    fn send_git_conflict_writes_expected_message() {
+        let (socket_path, listener) = temp_socket_path("conflict");
+        let ss = StatusSignals::new(socket_path.to_string_lossy().to_string());
+        ss.send_git_conflict();
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).unwrap();
+        assert_eq!(buf, "git-conflict\n");
+        cleanup(&socket_path);
     }
 }

@@ -314,6 +314,30 @@ The worktrees integrations offers 3 slash commands:
 3. **Merge** — `/wt-merge` tells the agent to merge the branch, push, clean up, and return to the main repo.
 4. **Exit** — `/wt-exit` immediately returns to the main repo without merging.
 
+### Auto-merge on exit
+
+When you quit zerostack while in a worktree, the `--wt-auto-merge` flag
+(or `--parallel`, which implies it) causes zerostack to attempt merging the
+worktree branch before exiting.
+
+- **Clean merge**: completes silently (merge, push, remove worktree, delete branch).
+- **Merge conflicts**: zerostack lists conflicting files and prompts:
+  ```
+  [a]bort  [l]eave for manual resolution  [h]elp (agent resolves)
+  ```
+  - `a` – abort the merge, restore clean state, do not delete the worktree.
+  - `l` – leave the conflict state in the main repo for manual `git mergetool`.
+  - `h` – abort the merge, then spawn the agent to redo the merge with
+    interactive conflict-resolution guidance (same as `/wt-merge`).
+
+| Flag | Description |
+|------|-------------|
+| `--worktree <name>` | Create a worktree on branch `<name>` and `cd` into it. |
+| `--wt-auto-merge`   | Auto-merge worktree branch on exit. |
+| `--parallel`        | Create a timestamped worktree with auto-merge on exit. |
+| `--wt-force`        | Force worktree remove and branch delete (`-D`) even if dirty. |
+| `--wt-base-dir <dir>` | Base directory for worktrees (default: parent of repo). |
+
 ## ACP (Agent Communication Protocol) support
 
 **ACP** is a JSON-RPC based protocol that standardizes communication between code editors

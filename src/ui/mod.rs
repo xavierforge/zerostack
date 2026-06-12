@@ -225,6 +225,102 @@ pub(crate) fn classify_submission(is_running: bool, text: &str) -> SubmitAction 
     }
 }
 
+#[cfg(feature = "git-worktree")]
+async fn spawn_merge_agent(
+    branch: &str,
+    target: &str,
+    main_path: &str,
+    wt_path: &str,
+    force_flag: bool,
+    session: &mut Session,
+    agent: &mut Option<AnyAgent>,
+    client: &AnyClient,
+    cli: &Cli,
+    cfg: &Config,
+    context: &ContextFiles,
+    permission: &Option<PermCheck>,
+    ask_tx: &Option<AskSender>,
+    sandbox: &Sandbox,
+    reasoning_enabled: bool,
+    agent_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
+    main_abort: &mut Option<tokio::task::AbortHandle>,
+    is_running: &mut bool,
+    status_signals: &Option<StatusSignals>,
+    wt_return_path: &mut Option<(String, String, String, bool)>,
+    #[cfg(feature = "mcp")] mcp_manager: &mut Option<McpClientManager>,
+) {
+    let wt_remove_flag = if force_flag { "--force" } else { "" };
+    let branch_delete_flag = if force_flag { "-D" } else { "-d" };
+    let prompt = format!(
+        "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
+         Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
+         Follow these steps:\n\
+         1. cd {main_path}\n\
+         2. git fetch --all\n\
+         3. git checkout {target}\n\
+         4. git pull --no-edit\n\
+         5. git merge --no-edit {branch}\n\n\
+         After step 5, CHECK THE EXIT CODE and output.\n\
+         - If the merge Succeeded (no conflicts), continue to step 6.\n\
+         - If there is a MERGE CONFLICT:\n\
+           a. Run: git diff --name-only --diff-filter=U\n\
+           b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
+           c. Ask the user what to do. Give them these options:\n\
+              - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
+              - 'resolve <file>': you help them fix the conflict in that file.\n\
+              - 'leave': leave the conflict state as-is for manual resolution.\n\
+           d. WAIT for the user's response before continuing.\n\
+           e. Follow their instruction.\n\n\
+         6. If the merge succeeded (or conflicts were resolved):\n\
+           - git worktree remove {wt_remove_flag} {wt_path}\n\
+           - git branch {branch_delete_flag} {branch}\n\n\
+         7. cd {main_path} and report completion.\n\n\
+         Important: Do NOT skip any step. Always check for conflicts after merge.",
+        branch = branch,
+        wt_path = wt_path,
+        target = target,
+        main_path = main_path,
+        wt_remove_flag = wt_remove_flag,
+        branch_delete_flag = branch_delete_flag
+    );
+    session.add_message(MessageRole::User, &prompt);
+    let history = crate::agent::runner::convert_history(session);
+    #[cfg(feature = "mcp")]
+    let mcp_ref = ensure_mcp_manager(mcp_manager, cfg).await;
+    ensure_agent(
+        agent,
+        client,
+        session,
+        cli,
+        cfg,
+        context,
+        permission,
+        ask_tx,
+        sandbox,
+        reasoning_enabled,
+        #[cfg(feature = "mcp")]
+        mcp_ref,
+    )
+    .await;
+    let runner = agent
+        .as_ref()
+        .unwrap()
+        .clone()
+        .spawn_runner(prompt, history);
+    *agent_rx = Some(runner.event_rx);
+    *main_abort = Some(runner.abort_handle);
+    *is_running = true;
+    if let Some(ss) = status_signals.as_ref() {
+        ss.send_start();
+    }
+    *wt_return_path = Some((
+        main_path.to_string(),
+        wt_path.to_string(),
+        branch.to_string(),
+        force_flag,
+    ));
+}
+
 /// Starts a single main agent run for `text` and records its abort handle.
 /// The ONLY place that sets `agent_rx`/`is_running` for user-driven runs, so the
 /// "at most one main run" invariant is enforced in one spot. Callers must ensure
@@ -1125,53 +1221,17 @@ pub async fn run_interactive(
                                                 let force_flag = cli.resolve_wt_force(cfg);
                                                 #[cfg(not(feature = "git-worktree"))]
                                                 let force_flag = false;
-                                                let wt_remove_flag = if force_flag { "--force" } else { "" };
-                                                let branch_delete_flag = if force_flag { "-D" } else { "-d" };
-                                                let prompt = format!(
-                                                    "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
-                                                     Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
-                                                     Follow these steps:\n\
-                                                     1. cd {main_path}\n\
-                                                     2. git fetch --all\n\
-                                                     3. git checkout {target}\n\
-                                                     4. git pull --no-edit\n\
-                                                     5. git merge --no-edit {branch}\n\n\
-                                                     After step 5, CHECK THE EXIT CODE and output.\n\
-                                                     - If the merge Succeeded (no conflicts), continue to step 6.\n\
-                                                     - If there is a MERGE CONFLICT:\n\
-                                                       a. Run: git diff --name-only --diff-filter=U\n\
-                                                       b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
-                                                       c. Ask the user what to do. Give them these options:\n\
-                                                          - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
-                                                          - 'resolve <file>': you help them fix the conflict in that file.\n\
-                                                          - 'leave': leave the conflict state as-is for manual resolution.\n\
-                                                       d. WAIT for the user's response before continuing.\n\
-                                                       e. Follow their instruction.\n\n\
-                                                     6. If the merge succeeded (or conflicts were resolved):\n\
-                                                       - git worktree remove {wt_remove_flag} {wt_path}\n\
-                                                       - git branch {branch_delete_flag} {branch}\n\n\
-                                                     7. cd {main_path} and report completion.\n\n\
-                                                     Important: Do NOT skip any step. Always check for conflicts after merge.",
-                                                    branch = branch, wt_path = wt_path, target = target, main_path = main_path,
-                                                    wt_remove_flag = wt_remove_flag, branch_delete_flag = branch_delete_flag
-                                                );
-                                                session.add_message(MessageRole::User, &prompt);
-                                                let history = crate::agent::runner::convert_history(session);
-                                                #[cfg(feature = "mcp")]
-                                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
-                                                ensure_agent(
-                                                    &mut agent, &client, session, cli, cfg, context,
+                                                spawn_merge_agent(
+                                                    branch, target, main_path, wt_path,
+                                                    force_flag,
+                                                    session,
+                                                    &mut agent, &client, cli, cfg, context,
                                                     &permission, &ask_tx, &sandbox, reasoning_enabled,
-                                                    #[cfg(feature = "mcp")] mcp_ref,
+                                                    &mut agent_rx, &mut main_abort, &mut is_running,
+                                                    &status_signals,
+                                                    &mut wt_return_path,
+                                                    #[cfg(feature = "mcp")] &mut mcp_manager,
                                                 ).await;
-                                                let runner = agent.as_ref().unwrap().clone().spawn_runner(prompt, history);
-                                                agent_rx = Some(runner.event_rx);
-                                                main_abort = Some(runner.abort_handle);
-                                                is_running = true;
-                                                if let Some(ss) = status_signals.as_ref() {
-                                                    ss.send_start();
-                                                }
-                                                wt_return_path = Some((main_path.clone(), wt_path.clone(), branch.clone(), force_flag));
                                             }
                                             crate::extras::git_worktree::DeferredWorktreeAction::Exit { main_path } => {
                                                 std::env::set_current_dir(main_path)
@@ -1598,16 +1658,23 @@ pub async fn run_interactive(
                 for f in &files {
                     let _ = renderer.write_line(&format!("  {}", f), C_ERROR);
                 }
-                let _ = renderer
-                    .write_line("Keep conflict state for manual resolution? [y/N] ", C_PERM);
+                if let Some(ss) = status_signals.as_ref() {
+                    ss.send_git_conflict();
+                }
+                let _ = renderer.write_line(
+                    "[a]bort  [l]eave for manual resolution  [h]elp (agent resolves)",
+                    C_PERM,
+                );
 
-                let abort = loop {
+                let action = loop {
                     tokio::select! {
                         Some(ev) = user_rx.recv() => {
                             if let crate::event::UserEvent::Key(key) = ev {
                                 match key.code {
-                                    KeyCode::Char('y') | KeyCode::Char('Y') => break false,
-                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => break true,
+                                    KeyCode::Char('a') | KeyCode::Char('A') => break 'a',
+                                    KeyCode::Char('l') | KeyCode::Char('L') => break 'l',
+                                    KeyCode::Char('h') | KeyCode::Char('H') => break 'h',
+                                    KeyCode::Enter | KeyCode::Esc => break 'a',
                                     _ => {}
                                 }
                             }
@@ -1615,17 +1682,133 @@ pub async fn run_interactive(
                     }
                 };
 
-                if abort {
-                    let _ = crate::extras::git_worktree::cancel_merge(&state);
-                    let _ = renderer.write_line("merge aborted, restored original state", C_AGENT);
-                } else {
-                    let _ = renderer.write_line(
-                        &format!(
-                            "conflict state left in {} for manual resolution",
-                            info.main_repo_path.display()
-                        ),
-                        C_AGENT,
-                    );
+                match action {
+                    'a' => {
+                        let _ = crate::extras::git_worktree::cancel_merge(&state);
+                        let _ =
+                            renderer.write_line("merge aborted, restored original state", C_AGENT);
+                    }
+                    'l' => {
+                        let _ = renderer.write_line(
+                            &format!(
+                                "conflict state left in {} for manual resolution",
+                                info.main_repo_path.display()
+                            ),
+                            C_AGENT,
+                        );
+                    }
+                    'h' => {
+                        let _ = crate::extras::git_worktree::cancel_merge(&state);
+                        let _ = renderer.write_line("agent resolving merge...", C_AGENT);
+                        let main_path = info.main_repo_path.display().to_string();
+                        let wt_path = info.worktree_path.display().to_string();
+                        let force_flag = cli.resolve_wt_force(cfg);
+                        spawn_merge_agent(
+                            &info.branch,
+                            &target,
+                            &main_path,
+                            &wt_path,
+                            force_flag,
+                            session,
+                            &mut agent,
+                            &client,
+                            cli,
+                            cfg,
+                            context,
+                            &permission,
+                            &ask_tx,
+                            &sandbox,
+                            reasoning_enabled,
+                            &mut agent_rx,
+                            &mut main_abort,
+                            &mut is_running,
+                            &status_signals,
+                            &mut wt_return_path,
+                            #[cfg(feature = "mcp")]
+                            &mut mcp_manager,
+                        )
+                        .await;
+
+                        let mut agent_line_started = false;
+                        let mut merge_response_buf = String::new();
+                        let mut merge_response_start_line = None;
+                        let mut merge_was_reasoning = false;
+                        while is_running {
+                            let ev = match agent_rx.as_mut() {
+                                Some(rx) => {
+                                    tokio::select! {
+                                        Some(e) = rx.recv() => Some(e),
+                                        Some(ev) = user_rx.recv() => {
+                                            if let crate::event::UserEvent::Key(key) = ev {
+                                                let is_ctrl_c = key.code == KeyCode::Char('c')
+                                                    && key.modifiers.contains(KeyModifiers::CONTROL);
+                                                if is_ctrl_c {
+                                                    if let Some(h) = main_abort.take() {
+                                                        h.abort();
+                                                    }
+                                                    is_running = false;
+                                                    if let Some(ss) = status_signals.as_ref() {
+                                                        ss.send_stop();
+                                                    }
+                                                    agent_rx = None;
+                                                }
+                                            }
+                                            None
+                                        }
+                                        Some(ask_req) = async {
+                                            if let Some(rx) = ask_rx.as_mut() {
+                                                rx.recv().await
+                                            } else {
+                                                std::future::pending().await
+                                            }
+                                        } => {
+                                            let _ = handle_permission_request(
+                                                ask_req, &mut renderer, session, cli,
+                                                &mut user_rx, &mut agent_line_started,
+                                                &mut merge_was_reasoning,
+                                            ).await;
+                                            None
+                                        }
+                                    }
+                                }
+                                None => break,
+                            };
+                            if let Some(ev) = ev {
+                                #[cfg(feature = "mcp")]
+                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                handle_agent_event(
+                                    ev,
+                                    &mut renderer,
+                                    session,
+                                    cfg,
+                                    cli,
+                                    context,
+                                    &mut is_running,
+                                    &mut agent_rx,
+                                    &mut agent_line_started,
+                                    &mut merge_response_buf,
+                                    &mut merge_response_start_line,
+                                    &mut merge_was_reasoning,
+                                    show_reasoning,
+                                    &mut agent,
+                                    &mut client,
+                                    &mut loop_label,
+                                    &permission,
+                                    &ask_tx,
+                                    &sandbox,
+                                    &status_signals,
+                                    #[cfg(feature = "loop")]
+                                    &mut loop_state,
+                                    #[cfg(feature = "git-worktree")]
+                                    &mut wt_return_path,
+                                    #[cfg(feature = "mcp")]
+                                    mcp_ref,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             crate::extras::git_worktree::MergeOutcome::Error(e) => {
