@@ -145,11 +145,14 @@ conversation, so focus your question on the specific decision you need help with
         let cfg = with_config(|c| c.clone());
 
         if let Some(max) = cfg.max_uses {
-            if self.uses.load(Ordering::Relaxed) >= max {
-                return Err(ToolError::Msg(
-                    "Advisor call limit reached for this request".into(),
-                ));
-            }
+            self.uses
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                    if u >= max { None } else { Some(u + 1) }
+                })
+                .map_err(|_| {
+                    ToolError::Msg("Advisor call limit reached for this request".into())
+                })?;
+        } else {
             self.uses.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -202,8 +205,8 @@ async fn run_advisor_completion(
     let kilobytes_limit = with_config(|c| c.kilobytes_limit);
     let conversation = format_conversation(messages, kilobytes_limit);
     let prompt = format!(
-        "{}\n\n## Conversation\n\n{}\n\n## Assistant's question\n\n{}",
-        ADVISOR_SYSTEM_PROMPT, conversation, question
+        "## Conversation\n\n{}\n\n## Assistant's question\n\n{}",
+        conversation, question
     );
 
     match model {
@@ -280,18 +283,15 @@ fn format_conversation(msgs: &[SessionMessage], kilobytes_limit: u32) -> String 
 
     // Omission marker if there is a gap
     if head_end < tail_start {
-        result.push_str("\n\n[... conversation omitted ...]");
-        if head_end > 0 {
-            result.push_str("\n\n");
-        }
-    } else if head_end > 0 && tail_start < msgs.len() {
+        result.push_str("\n\n[... conversation omitted ...]\n\n");
+    } else if head_end > 0 && head_end < msgs.len() {
         result.push_str("\n\n");
     }
 
     // Tail (only messages not already in head)
     let tail_begin = head_end.max(tail_start);
     for (i, msg) in msgs.iter().enumerate().skip(tail_begin) {
-        if i > tail_begin || (head_end > 0 && head_end < tail_start) {
+        if i > tail_begin {
             result.push_str("\n\n");
         }
         result.push_str(&format_line(msg));
@@ -329,5 +329,137 @@ where
         Ok("[Advisor returned empty response]".to_string())
     } else {
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::MessageRole;
+
+    fn msg(role: MessageRole, content: &str) -> SessionMessage {
+        SessionMessage {
+            role,
+            content: content.into(),
+            estimated_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn format_conversation_empty() {
+        assert_eq!(format_conversation(&[], 1), "");
+    }
+
+    #[test]
+    fn format_conversation_single_message() {
+        let msgs = [msg(MessageRole::User, "hello")];
+        assert_eq!(format_conversation(&msgs, 1024), "[User]: hello");
+    }
+
+    #[test]
+    fn format_conversation_two_messages() {
+        let msgs = [
+            msg(MessageRole::User, "hello"),
+            msg(MessageRole::Assistant, "hi there"),
+        ];
+        assert_eq!(
+            format_conversation(&msgs, 1024),
+            "[User]: hello\n\n[Assistant]: hi there"
+        );
+    }
+
+    #[test]
+    fn format_conversation_nothing_fits_returns_omission_only() {
+        let msgs = [
+            msg(MessageRole::User, "aaaaaaaaaa"),
+            msg(MessageRole::Assistant, "bbbbbbbbbb"),
+            msg(MessageRole::User, "cccccccccc"),
+            msg(MessageRole::Assistant, "dddddddddd"),
+        ];
+        let result = format_conversation(&msgs, 0);
+        assert!(result.contains("[... conversation omitted ...]"));
+        // Nothing fits in head or tail, so result is just the marker (plus \n\n wrapping)
+        assert!(!result.contains("[User]:"));
+        assert!(!result.contains("[Assistant]:"));
+    }
+
+    #[test]
+    fn format_conversation_head_with_tail_gap() {
+        // 7 messages, limit=0: head empty, tail empty, just omission marker
+        let short = "aa";
+        let msgs = [
+            msg(MessageRole::User, short),
+            msg(MessageRole::Assistant, short),
+            msg(
+                MessageRole::User,
+                "a much longer message that takes more space",
+            ),
+            msg(
+                MessageRole::Assistant,
+                "another fairly long message here too",
+            ),
+            msg(
+                MessageRole::User,
+                "a third long message that pushes the limit",
+            ),
+            msg(MessageRole::Assistant, short),
+            msg(MessageRole::User, short),
+        ];
+        let result = format_conversation(&msgs, 0);
+        assert!(result.contains("[... conversation omitted ...]"));
+        // With limit=0 nothing fits; head and tail are both empty
+    }
+
+    #[test]
+    fn format_conversation_small_limit_head_tail_with_gap() {
+        // per_side=5 bytes: first short msg (~10B) fails head; last short msg (~10B) fails tail
+        // but with just 2 short messages close together, one might slip into tail
+        let msgs = [
+            msg(MessageRole::User, "x"),
+            msg(MessageRole::Assistant, "y"),
+            msg(MessageRole::User, "z"),
+        ];
+        let result = format_conversation(&msgs, 0);
+        // per_side=0: nothing fits; expect omission marker only
+        assert!(result.contains("[... conversation omitted ...]"));
+    }
+
+    #[test]
+    fn format_conversation_no_gap() {
+        let msgs = [
+            msg(MessageRole::User, "hello"),
+            msg(MessageRole::Assistant, "world"),
+        ];
+        let result = format_conversation(&msgs, 1024);
+        assert!(!result.contains("[... conversation omitted ...]"));
+    }
+
+    #[test]
+    fn format_conversation_no_duplicate_when_head_covers_all() {
+        let msgs = [
+            msg(MessageRole::User, "short"),
+            msg(MessageRole::Assistant, "msg"),
+        ];
+        let result = format_conversation(&msgs, 1024);
+        assert_eq!(result.matches("[User]:").count(), 1);
+        assert_eq!(result.matches("[Assistant]:").count(), 1);
+    }
+
+    #[test]
+    fn omission_marker_not_on_same_line_as_tail() {
+        let msgs = [
+            msg(MessageRole::User, "first"),
+            msg(MessageRole::Assistant, "second"),
+            msg(MessageRole::User, "third"),
+            msg(MessageRole::Assistant, "fourth"),
+            msg(MessageRole::User, "fifth"),
+        ];
+        let result = format_conversation(&msgs, 0);
+        let marker_pos = result.find("[... conversation omitted ...]").unwrap();
+        let after_marker = &result[marker_pos + "[... conversation omitted ...]".len()..];
+        assert!(
+            after_marker.starts_with("\n\n"),
+            "marker must be separated from next message by \\n\\n, got: {after_marker:?}"
+        );
     }
 }
