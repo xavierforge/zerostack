@@ -1,4 +1,4 @@
-use crate::agent::tools::split_bash_commands;
+use crate::agent::tools::bash::split_bash_commands;
 
 #[test]
 fn split_simple_semicolon() {

@@ -1,4 +1,5 @@
-use crate::agent::tools::{TODO_LIST, TodoItem, TodoWriteArgs, WriteTodoList};
+use crate::agent::tools::WriteTodoList;
+use crate::agent::tools::todo::{TODO_LIST, TodoItem, TodoWriteArgs};
 use compact_str::CompactString;
 use rig::tool::Tool;
 

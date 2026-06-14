@@ -1,4 +1,4 @@
-use crate::agent::tools::format_size;
+use crate::agent::tools::list_dir::format_size;
 
 #[test]
 fn format_0_bytes() {
@@ -61,7 +61,7 @@ fn format_large_kb() {
     assert_eq!(format_size(1_047_552), "1023.0 KB");
 }
 
-use crate::agent::tools::count_dir_entries;
+use crate::agent::tools::list_dir::count_dir_entries;
 
 #[test]
 fn count_empty_dir() {

@@ -1,16 +1,14 @@
-mod bash;
+pub(crate) mod bash;
 pub(crate) mod crc;
 pub(crate) mod edit;
-mod find_files;
-mod grep;
-mod list_dir;
+pub(crate) mod find_files;
+pub(crate) mod grep;
+pub(crate) mod list_dir;
 pub(crate) mod normalize;
 pub(crate) mod read;
 pub(crate) mod todo;
-mod write;
+pub(crate) mod write;
 
-pub(crate) use bash::split_bash_commands;
-pub(crate) use list_dir::{count_dir_entries, format_size};
 pub(crate) use normalize::{levenshtein_similarity, normalize_whitespace};
 
 use std::sync::Mutex;
@@ -73,7 +71,7 @@ pub use find_files::FindFilesTool;
 pub use grep::GrepTool;
 pub use list_dir::ListDirTool;
 pub use read::ReadTool;
-pub use todo::{TODO_LIST, TodoItem, TodoWriteArgs, WriteTodoList};
+pub use todo::WriteTodoList;
 pub use write::WriteTool;
 
 use std::io;
