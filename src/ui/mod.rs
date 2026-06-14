@@ -1647,6 +1647,9 @@ pub async fn run_interactive(
                 "worktree has uncommitted changes. [c]ommit all and continue  [a]bort merge",
                 C_PERM,
             );
+            if let Some(ss) = status_signals.as_ref() {
+                ss.send_git_conflict();
+            }
             let action = loop {
                 tokio::select! {
                     Some(ev) = user_rx.recv() => {
