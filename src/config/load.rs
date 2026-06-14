@@ -209,23 +209,21 @@ pub fn load() -> (Config, bool) {
 
 #[cfg(feature = "mcp")]
 pub fn inject_mcp_defaults(cfg: &mut Config) {
-    if cfg.mcp_servers.is_some() {
-        return;
-    }
-    let mut defaults = HashMap::new();
+    let mut servers = cfg.mcp_servers.take().unwrap_or_default();
 
     if cfg.resolve_enable_exa_mcp() {
         let mut headers = HashMap::new();
         if let Ok(key) = std::env::var("EXA_API_KEY") {
             headers.insert("x-api-key".to_string(), key);
         }
-        defaults.insert(
-            "Exa Web Search".to_string(),
-            McpServerConfig::Url {
+        servers
+            .entry("Exa Web Search".to_string())
+            .or_insert(McpServerConfig::Url {
                 url: "https://mcp.exa.ai/mcp".to_string(),
                 headers,
-            },
-        );
+            });
+    } else {
+        servers.remove("Exa Web Search");
     }
 
     if cfg.resolve_enable_context7_mcp() {
@@ -233,13 +231,14 @@ pub fn inject_mcp_defaults(cfg: &mut Config) {
         if let Ok(key) = std::env::var("CONTEXT7_API_KEY") {
             headers.insert("authorization".to_string(), format!("Bearer {key}"));
         }
-        defaults.insert(
-            "Context7".to_string(),
-            McpServerConfig::Url {
+        servers
+            .entry("Context7".to_string())
+            .or_insert(McpServerConfig::Url {
                 url: "https://mcp.context7.com/mcp".to_string(),
                 headers,
-            },
-        );
+            });
+    } else {
+        servers.remove("Context7");
     }
 
     if cfg.resolve_enable_grepapp_mcp() {
@@ -247,19 +246,29 @@ pub fn inject_mcp_defaults(cfg: &mut Config) {
         if let Ok(key) = std::env::var("GREP_APP_API_KEY") {
             headers.insert("authorization".to_string(), format!("Bearer {key}"));
         }
-        defaults.insert(
-            "Grep.app".to_string(),
-            McpServerConfig::Url {
+        servers
+            .entry("Grep.app".to_string())
+            .or_insert(McpServerConfig::Url {
                 url: "https://mcp.grep.app".to_string(),
                 headers,
-            },
-        );
+            });
+    } else {
+        servers.remove("Grep.app");
     }
 
-    cfg.mcp_servers = Some(defaults);
+    cfg.mcp_servers = Some(servers);
 }
 
 pub fn save_config(cfg: &Config) -> io::Result<()> {
+    let mut cfg = cfg.clone();
+    #[cfg(feature = "mcp")]
+    {
+        if let Some(ref mut servers) = cfg.mcp_servers {
+            servers.remove("Exa Web Search");
+            servers.remove("Context7");
+            servers.remove("Grep.app");
+        }
+    }
     let path = resolve_config_path();
     let parent = path
         .parent()
@@ -267,10 +276,10 @@ pub fn save_config(cfg: &Config) -> io::Result<()> {
     std::fs::create_dir_all(parent)?;
     match path.extension().and_then(|e| e.to_str()) {
         Some("toml") => {
-            let content = toml::to_string(cfg).map_err(io::Error::other)?;
+            let content = toml::to_string(&cfg).map_err(io::Error::other)?;
             std::fs::write(&path, content)?;
         }
-        _ => std::fs::write(&path, serde_json::to_string_pretty(cfg)?)?,
+        _ => std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?,
     }
     Ok(())
 }
