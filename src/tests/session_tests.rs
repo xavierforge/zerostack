@@ -84,6 +84,46 @@ fn calibration_ignores_zero_usage() {
     assert_eq!(s.effective_context_tokens(), s.total_estimated_tokens);
 }
 
+// Helper: a session with `n` ASCII messages of `len` chars each, so every
+// message has a predictable estimated_tokens == len/4.
+fn session_with_messages(n: usize, len: usize) -> Session {
+    let mut s = Session::new("openai", "gpt-4", 128000);
+    for _ in 0..n {
+        s.add_message(MessageRole::User, &"x".repeat(len));
+    }
+    s
+}
+
+#[test]
+fn compaction_cut_keeps_recent_within_budget() {
+    // 4 messages × 10 tokens = 40 total. keep_recent=15 reaches back across
+    // the last two (20 tokens), so the first two are summarized.
+    let s = session_with_messages(4, 40);
+    assert_eq!(s.messages[0].estimated_tokens, 10);
+    assert_eq!(Session::select_compaction_cut(&s.messages, 15), 2);
+}
+
+#[test]
+fn compaction_cut_oversized_keep_recent_summarizes_nothing() {
+    // Regression: keep_recent (100) larger than the whole history (40) must
+    // keep the recent messages, NOT summarize everything (cut == 0, which the
+    // caller treats as "entire context is recent").
+    let s = session_with_messages(4, 40);
+    assert_eq!(Session::select_compaction_cut(&s.messages, 100), 0);
+}
+
+#[test]
+fn compaction_cut_zero_keep_recent_summarizes_all() {
+    let s = session_with_messages(4, 40);
+    assert_eq!(Session::select_compaction_cut(&s.messages, 0), 4);
+}
+
+#[test]
+fn compaction_cut_single_message_is_kept() {
+    let s = session_with_messages(1, 40); // 1 msg, 10 tokens
+    assert_eq!(Session::select_compaction_cut(&s.messages, 5), 0);
+}
+
 #[test]
 fn new_session_has_id() {
     let s = Session::new("openai", "gpt-4", 128000);

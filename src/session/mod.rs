@@ -164,6 +164,36 @@ impl Session {
             .sum();
         self.calibrated_tokens.saturating_add(delta)
     }
+    
+    /// Pick the compaction boundary: `messages[..cut]` get summarized and
+    /// `messages[cut..]` are kept as recent context. Walks backward summing
+    /// per-message `estimated_tokens` until `keep_recent` is covered.
+    ///
+    /// This deliberately stays in the per-message estimate scale rather than
+    /// the calibrated total: it is a *relative* comparison among messages (how
+    /// far back does `keep_recent` reach), so any uniform estimator bias
+    /// cancels out. Calibration only matters for the absolute total in
+    /// `effective_context_tokens`.
+    ///
+    /// Returns 0 ("nothing old enough to summarize") when every message fits
+    /// within `keep_recent`. The initial value is 0, not `messages.len()`, so
+    /// an oversized `keep_recent` keeps the recent messages instead of
+    /// summarizing the entire history, a case made reachable now that the
+    /// compaction gate measures context against real usage (system prompt and
+    /// context files can push the real total over budget while the messages
+    /// themselves stay small).
+    pub fn select_compaction_cut(messages: &[SessionMessage], keep_recent: u64) -> usize {
+        let mut accumulated = 0u64;
+        let mut cut_idx = 0;
+        for (i, msg) in messages.iter().enumerate().rev() {
+            if accumulated >= keep_recent {
+                cut_idx = i + 1;
+                break;
+            }
+            accumulated = accumulated.saturating_add(msg.estimated_tokens);
+        }
+        cut_idx
+    }
 
     pub fn needs_compaction(&self, reserve_tokens: u64) -> bool {
         if self.context_window == 0 {
