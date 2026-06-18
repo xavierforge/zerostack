@@ -102,9 +102,23 @@ impl Sandbox {
             "/dev",
             "--tmpfs",
             "/tmp",
-            "--ro-bind",
-            "/etc/resolv.conf",
-            "/etc/resolv.conf",
+        ]);
+
+        match std::fs::canonicalize("/etc/resolv.conf") {
+            Ok(target) => {
+                cmd.arg("--ro-bind-try");
+                cmd.arg(target);
+                cmd.arg("/etc/resolv.conf");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "sandbox: no resolver file could be mounted: could not resolve /etc/resolv.conf: {}",
+                    e
+                );
+            }
+        }
+
+        cmd.args([
             "--unshare-ipc",
             "--unshare-pid",
             "--unshare-uts",
