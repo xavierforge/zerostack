@@ -34,21 +34,13 @@ pub fn render_session(
     context: &ContextFiles,
 ) -> anyhow::Result<()> {
     renderer.clear_content()?;
-    let welcome = format!(
-        "zerostack {}  {}  {}",
-        cli.resolve_provider(cfg),
-        cli.resolve_model(cfg),
-        env!("CARGO_PKG_VERSION")
-    );
-    renderer.write_line(&welcome, Color::Cyan)?;
-    renderer.write_line("", Color::White)?;
     if context.agents.is_some() {
-        renderer.write_line("loaded AGENTS.md", Color::DarkGrey)?;
+        renderer.write_line("[system] loaded AGENTS.md", Color::DarkGrey)?;
         renderer.write_line("", Color::White)?;
     }
     #[cfg(feature = "archmd")]
     if context.architecture.is_some() {
-        renderer.write_line("loaded ARCHITECTURE.md", Color::DarkGrey)?;
+        renderer.write_line("[system] loaded ARCHITECTURE.md", Color::DarkGrey)?;
         renderer.write_line("", Color::White)?;
     }
     if !session.compactions.is_empty() {
@@ -86,6 +78,32 @@ pub fn render_session(
                 renderer.write_line(&format!("{} {}", prefix, line), _c)?;
             }
         }
+        renderer.write_line("", Color::White)?;
+    }
+    if session.messages.is_empty() {
+        let cwd = std::env::current_dir().ok();
+        let cwd_str = cwd
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or(".");
+        let welcome = format!(
+            "[>] zerostack {} | {} | {}",
+            env!("CARGO_PKG_VERSION"),
+            cli.resolve_model(cfg),
+            cwd_str,
+        );
+        renderer.write_line(&welcome, Color::Cyan)?;
+        renderer.write_line(
+            "──────────────────────────────────────────────────",
+            Color::Cyan,
+        )?;
+        renderer.write_line(
+            "Ready to code; type a request or '/' for commands",
+            Color::White,
+        )?;
+        renderer.write_line("Run /welcome or /help to get started", Color::White)?;
+        renderer.write_line("", Color::White)?;
         renderer.write_line("", Color::White)?;
     }
     Ok(())

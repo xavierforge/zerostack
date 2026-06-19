@@ -40,6 +40,7 @@ pub async fn ensure_agent(
         return;
     }
     let model = client.completion_model(session.model.to_string());
+    let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
     *agent = Some(
         crate::provider::build_agent(
             model,
@@ -50,6 +51,7 @@ pub async fn ensure_agent(
             ask_tx.clone(),
             sandbox.clone(),
             reasoning_enabled,
+            temperature,
             mcp_manager,
         )
         .await,
@@ -74,6 +76,7 @@ pub async fn ensure_agent(
         return;
     }
     let model = client.completion_model(session.model.to_string());
+    let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
     *agent = Some(
         crate::provider::build_agent(
             model,
@@ -84,6 +87,7 @@ pub async fn ensure_agent(
             ask_tx.clone(),
             sandbox.clone(),
             reasoning_enabled,
+            temperature,
         )
         .await,
     );
@@ -375,6 +379,9 @@ async fn handle_agent_done(
         session.input_token_cost,
         session.output_token_cost,
     );
+    // Anchor context-size accounting to the provider's real usage.
+    // Must come after add_message so the anchor includes the just-appended response.
+    session.set_calibration(input_tokens, output_tokens);
     *agent_line_started = false;
     response_buf.clear();
     *response_start_line = None;
@@ -384,13 +391,15 @@ async fn handle_agent_done(
     #[cfg(not(feature = "loop"))]
     let loop_running = false;
 
+    let qm = crate::config::quick_models_map(cfg);
+
     #[cfg(feature = "memory")]
     let reserve = crate::extras::memory::effective_reserve(
-        cfg.resolve_reserve_tokens(),
+        cfg.resolve_reserve_tokens(&session.model, &qm),
         context.memory.as_deref(),
     );
     #[cfg(not(feature = "memory"))]
-    let reserve = cfg.resolve_reserve_tokens();
+    let reserve = cfg.resolve_reserve_tokens(&session.model, &qm);
 
     if !loop_running
         && cfg.resolve_compact_enabled()
@@ -435,20 +444,67 @@ async fn handle_agent_done(
     if let Some(ls) = loop_state
         && ls.active
     {
+        let summary: String = response
+            .chars()
+            .take(crate::extras::r#loop::SUMMARY_TRUNCATION_CHARS)
+            .collect();
+        ls.last_summary = Some(summary.clone());
+
+        let validation_output = if let Some(cmd) = &ls.run_cmd {
+            let shell = if cfg!(windows) { "powershell" } else { "sh" };
+            let shell_arg = if cfg!(windows) { "-Command" } else { "-c" };
+            match tokio::process::Command::new(shell)
+                .arg(shell_arg)
+                .arg(cmd)
+                .output()
+                .await
+            {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let combined = if stderr.is_empty() {
+                        stdout
+                    } else {
+                        format!("{}\n{}", stdout, stderr)
+                    };
+                    Some(combined)
+                }
+                Err(e) => {
+                    let msg = format!("error: {}", e);
+                    Some(msg)
+                }
+            }
+        } else {
+            None
+        };
+        ls.last_run_output = validation_output.clone();
+
+        let _ = crate::extras::r#loop::transcript::save_iteration(
+            &session.id,
+            ls.iteration,
+            &ls.build_prompt(),
+            &response,
+            validation_output.as_deref(),
+            &summary,
+        );
+
+        ls.iteration += 1;
+
         if ls.should_stop() {
             renderer.write_line(
-                &format!("[loop] max iterations ({}) reached, stopping", ls.iteration),
+                &format!(
+                    "[loop] max iterations ({}) reached, stopping",
+                    ls.iteration - 1
+                ),
                 C_AGENT,
             )?;
             ls.active = false;
             *loop_label = None;
         } else {
-            let summary: String = response.chars().take(200).collect();
-            ls.last_summary = Some(summary);
-            ls.iteration += 1;
             let prompt = ls.build_prompt();
             *agent = Some({
                 let model = client.completion_model(session.model.to_string());
+                let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
                 crate::provider::build_agent(
                     model,
                     cli,
@@ -458,6 +514,7 @@ async fn handle_agent_done(
                     ask_tx.clone(),
                     sandbox.clone(),
                     true,
+                    temperature,
                     #[cfg(feature = "mcp")]
                     mcp_manager,
                 )
@@ -495,6 +552,7 @@ async fn handle_agent_done(
                 apply_current_prompt_mode(context, permission);
                 *agent = Some({
                     let model = client.completion_model(session.model.to_string());
+                    let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
                     crate::provider::build_agent(
                         model,
                         cli,
@@ -504,6 +562,7 @@ async fn handle_agent_done(
                         ask_tx.clone(),
                         sandbox.clone(),
                         true,
+                        temperature,
                         #[cfg(feature = "mcp")]
                         mcp_manager,
                     )

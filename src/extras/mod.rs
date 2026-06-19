@@ -19,6 +19,11 @@ pub mod subagents;
 #[cfg(feature = "archmd")]
 pub mod archmd;
 
+#[cfg(feature = "advisor")]
+pub mod advisor;
+
+pub mod chain;
+#[cfg(feature = "multimodal")]
 pub mod multimodal;
 
 pub mod status_signals;

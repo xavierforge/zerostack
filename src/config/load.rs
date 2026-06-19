@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use compact_str::CompactString;
 
-use crate::config::{Config, EditSystem, QuickModelConfig, ShowToolDetails};
+use std::io;
+
+use crate::config::{Config, EditSystem, QuickModelConfig};
 #[cfg(feature = "mcp")]
 use crate::extras::mcp::config::McpServerConfig;
 use crate::session::storage;
@@ -59,6 +61,8 @@ fn default_quick_models() -> HashMap<String, QuickModelConfig> {
             model: CompactString::new("deepseek/deepseek-v4-flash"),
             input_token_cost: 0.0983,
             output_token_cost: 0.1966,
+            reserve_tokens: None,
+            temperature: None,
         },
     );
     map.insert(
@@ -68,19 +72,15 @@ fn default_quick_models() -> HashMap<String, QuickModelConfig> {
             model: CompactString::new("deepseek/deepseek-v4-pro"),
             input_token_cost: 0.435,
             output_token_cost: 0.87,
+            reserve_tokens: None,
+            temperature: None,
         },
     );
     map
 }
 
 pub fn quick_models_map(cfg: &Config) -> HashMap<String, QuickModelConfig> {
-    let mut map = default_quick_models();
-    if let Some(user_models) = &cfg.quick_models {
-        for (k, v) in user_models {
-            map.insert(k.clone(), v.clone());
-        }
-    }
-    map
+    cfg.quick_models.clone().unwrap_or_default()
 }
 
 pub fn save_quick_model(
@@ -109,6 +109,8 @@ pub fn save_quick_model(
             model: CompactString::new(model),
             input_token_cost,
             output_token_cost,
+            reserve_tokens: None,
+            temperature: None,
         },
     );
 
@@ -132,27 +134,31 @@ fn rich_default_config() -> Config {
     cfg.provider = Some(CompactString::new("openrouter"));
     cfg.model = Some(CompactString::new("deepseek/deepseek-v4-pro"));
     cfg.max_tokens = Some(16384);
-    cfg.context_window = Some(128_000);
     cfg.compact_enabled = Some(true);
     cfg.max_text_file_size = Some(1_048_576);
     cfg.edit_system = Some(EditSystem::Similarity);
     cfg.default_permission_mode = Some("standard".to_string());
     cfg.default_prompt = Some(CompactString::new("code"));
-    cfg.show_tool_details = Some(ShowToolDetails::Lines(1));
-    cfg.subagent_model = Some(CompactString::new("deepseek-v4-flash"));
+    cfg.show_tool_details = None;
     #[cfg(feature = "subagents")]
     {
         cfg.subagent_max_read_lines = Some(2000);
         cfg.subagent_max_grep_results = Some(200);
         cfg.subagent_max_find_results = Some(200);
     }
+    cfg.chain = Some(crate::config::types::ChainConfig::default());
+    #[cfg(feature = "advisor")]
+    {
+        cfg.advisor = Some(crate::config::types::AdvisorConfig::default());
+    }
     cfg
 }
 
-pub fn load() -> Config {
+pub fn load() -> (Config, bool) {
     let path = resolve_config_path();
+    let is_first_startup = !path.exists();
     #[allow(unused_mut)]
-    let mut cfg: Config = if !path.exists() {
+    let mut cfg: Config = if is_first_startup {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -177,7 +183,7 @@ pub fn load() -> Config {
             Some("toml") => toml::from_str(&content).unwrap_or_else(|e| {
                 eprintln!(
                     "error: {} is not a valid config: {}\n\
-                     Fix the file or remove it to use defaults.",
+                      Fix the file or remove it to use defaults.",
                     path.display(),
                     e,
                 );
@@ -186,7 +192,7 @@ pub fn load() -> Config {
             _ => serde_json::from_str(&content).unwrap_or_else(|e| {
                 eprintln!(
                     "error: {} is not a valid config: {}\n\
-                     Fix the file or remove it to use defaults.",
+                      Fix the file or remove it to use defaults.",
                     path.display(),
                     e,
                 );
@@ -196,39 +202,84 @@ pub fn load() -> Config {
     };
 
     #[cfg(feature = "mcp")]
-    if cfg.mcp_servers.is_none() {
+    inject_mcp_defaults(&mut cfg);
+
+    (cfg, is_first_startup)
+}
+
+#[cfg(feature = "mcp")]
+pub fn inject_mcp_defaults(cfg: &mut Config) {
+    let mut servers = cfg.mcp_servers.take().unwrap_or_default();
+
+    if cfg.resolve_enable_exa_mcp() {
         let mut headers = HashMap::new();
         if let Ok(key) = std::env::var("EXA_API_KEY") {
             headers.insert("x-api-key".to_string(), key);
         }
-        let mut defaults = HashMap::new();
-        defaults.insert(
-            "Exa Web Search".to_string(),
-            McpServerConfig::Url {
+        servers
+            .entry("Exa Web Search".to_string())
+            .or_insert(McpServerConfig::Url {
                 url: "https://mcp.exa.ai/mcp".to_string(),
                 headers,
-            },
-        );
-        cfg.mcp_servers = Some(defaults);
+            });
+    } else {
+        servers.remove("Exa Web Search");
     }
 
-    // Validate the opt-in mid-turn compaction threshold once, here at load,
-    // rather than in `resolve_mid_turn_compact_threshold` (which runs per
-    // provider call in the hot path and would spam). Out-of-range values are
-    // ignored — mid-turn compaction simply stays off — but we say so loudly and
-    // explain the correct form instead of failing silently.
-    if let Some(t) = cfg.mid_turn_compact_threshold
-        && !(t > 0.0 && t <= 1.0)
+    if cfg.resolve_enable_context7_mcp() {
+        let mut headers = HashMap::new();
+        if let Ok(key) = std::env::var("CONTEXT7_API_KEY") {
+            headers.insert("authorization".to_string(), format!("Bearer {key}"));
+        }
+        servers
+            .entry("Context7".to_string())
+            .or_insert(McpServerConfig::Url {
+                url: "https://mcp.context7.com/mcp".to_string(),
+                headers,
+            });
+    } else {
+        servers.remove("Context7");
+    }
+
+    if cfg.resolve_enable_grepapp_mcp() {
+        let mut headers = HashMap::new();
+        if let Ok(key) = std::env::var("GREP_APP_API_KEY") {
+            headers.insert("authorization".to_string(), format!("Bearer {key}"));
+        }
+        servers
+            .entry("Grep.app".to_string())
+            .or_insert(McpServerConfig::Url {
+                url: "https://mcp.grep.app".to_string(),
+                headers,
+            });
+    } else {
+        servers.remove("Grep.app");
+    }
+
+    cfg.mcp_servers = Some(servers);
+}
+
+pub fn save_config(cfg: &Config) -> io::Result<()> {
+    let mut cfg = cfg.clone();
+    #[cfg(feature = "mcp")]
     {
-        eprintln!(
-            "warning: mid_turn_compact_threshold = {t} is out of range and will be ignored \
-             (mid-turn compaction disabled).\n\
-             It must be a fraction greater than 0 and at most 1, where the value is the \
-             fraction of the context window at which to compact during a turn \
-             (e.g. 0.80 = compact at 80%). Recommended starting value: 0.80. \
-             Remove the key to disable mid-turn compaction without this warning.",
-        );
+        if let Some(ref mut servers) = cfg.mcp_servers {
+            servers.remove("Exa Web Search");
+            servers.remove("Context7");
+            servers.remove("Grep.app");
+        }
     }
-
-    cfg
+    let path = resolve_config_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid config path"))?;
+    std::fs::create_dir_all(parent)?;
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("toml") => {
+            let content = toml::to_string(&cfg).map_err(io::Error::other)?;
+            std::fs::write(&path, content)?;
+        }
+        _ => std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?,
+    }
+    Ok(())
 }

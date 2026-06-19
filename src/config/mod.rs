@@ -76,6 +76,13 @@ pub struct Config {
     pub mid_turn_compact_threshold: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always_show_welcome: Option<bool>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "auto-update-prompts"
+    )]
+    pub auto_update_prompts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "auto-update-themes")]
+    pub auto_update_themes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_providers: Option<HashMap<String, types::CustomProviderConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +107,18 @@ pub struct Config {
     pub sandbox_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_all_mcp_calls: Option<bool>,
+    #[cfg(feature = "mcp")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "enable-exa-mcp")]
+    pub enable_exa_mcp: Option<bool>,
+    #[cfg(feature = "mcp")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "enable-context7-mcp"
+    )]
+    pub enable_context7_mcp: Option<bool>,
+    #[cfg(feature = "mcp")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "enable-grepapp-mcp")]
+    pub enable_grepapp_mcp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_permission_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "permission-modes")]
@@ -156,6 +175,11 @@ pub struct Config {
     pub subagent_provider: Option<CompactString>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub colors: Option<types::ColorsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain: Option<types::ChainConfig>,
+    #[cfg(feature = "advisor")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advisor: Option<types::AdvisorConfig>,
 }
 
 impl Config {
@@ -163,16 +187,64 @@ impl Config {
         self.custom_providers.clone().unwrap_or_default()
     }
 
-    pub fn resolve_context_window(&self) -> u64 {
-        self.context_window.unwrap_or(128_000)
+    pub fn resolve_context_window(&self, provider: &str, model_id: &str) -> u64 {
+        if let Some(cw) = self.context_window {
+            return cw;
+        }
+        if let Some(entries) = crate::models_catalog::catalog_entries(provider) {
+            for e in entries {
+                if e.id == model_id {
+                    if let Some(cl) = e.context_length {
+                        return cl as u64;
+                    }
+                    break;
+                }
+            }
+        }
+        128_000
     }
 
-    pub fn resolve_reserve_tokens(&self) -> u64 {
-        self.reserve_tokens.unwrap_or(16_384)
+    pub fn resolve_reserve_tokens(
+        &self,
+        model_id: &str,
+        qm: &HashMap<String, types::QuickModelConfig>,
+    ) -> u64 {
+        if let Some(rt) = self.reserve_tokens {
+            return rt;
+        }
+        for qmc in qm.values() {
+            if qmc.model.as_str() == model_id {
+                if let Some(rt) = qmc.reserve_tokens {
+                    return rt;
+                }
+            }
+        }
+        8_192
     }
 
     pub fn resolve_keep_recent_tokens(&self) -> u64 {
         self.keep_recent_tokens.unwrap_or(10_000)
+    }
+
+    /// Resolves temperature: CLI `--temperature` > quick-model `temperature` >
+    /// global `temperature`. Returns `None` when no temperature is configured.
+    pub fn resolve_temperature(
+        &self,
+        cli: &crate::cli::Cli,
+        model_id: &str,
+        qm: &HashMap<String, types::QuickModelConfig>,
+    ) -> Option<f64> {
+        if let Some(temp) = cli.temperature {
+            return Some(temp.clamp(0.0, 2.0));
+        }
+        for qmc in qm.values() {
+            if qmc.model.as_str() == model_id {
+                if let Some(temp) = qmc.temperature {
+                    return Some(temp.clamp(0.0, 2.0));
+                }
+            }
+        }
+        self.temperature.map(|t| t.clamp(0.0, 2.0))
     }
 
     pub fn resolve_compact_enabled(&self) -> bool {
@@ -241,6 +313,29 @@ impl Config {
         self.always_show_welcome.unwrap_or(false)
     }
 
+    pub fn resolve_auto_update_prompts(&self) -> Option<bool> {
+        self.auto_update_prompts
+    }
+
+    pub fn resolve_auto_update_themes(&self) -> Option<bool> {
+        self.auto_update_themes
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn resolve_enable_exa_mcp(&self) -> bool {
+        self.enable_exa_mcp.unwrap_or(true)
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn resolve_enable_context7_mcp(&self) -> bool {
+        self.enable_context7_mcp.unwrap_or(false)
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn resolve_enable_grepapp_mcp(&self) -> bool {
+        self.enable_grepapp_mcp.unwrap_or(false)
+    }
+
     pub fn build_permission_config(&self) -> PermissionConfigs {
         let glob: PermissionConfig = self
             .permission
@@ -288,6 +383,12 @@ pub enum ResolvedShowToolDetails {
     Off,
     Limited(usize),
     Unlimited,
+}
+
+/// Convenience: resolves temperature with all sources (CLI, quick model, global config).
+pub fn resolve_temperature(cli: &crate::cli::Cli, cfg: &Config, model_id: &str) -> Option<f64> {
+    let qm = quick_models_map(cfg);
+    cfg.resolve_temperature(cli, model_id, &qm)
 }
 
 impl ShowToolDetails {

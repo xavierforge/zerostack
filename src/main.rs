@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 mod agent;
 mod auth;
 mod cli;
@@ -22,7 +24,11 @@ mod tests;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
+#[cfg(feature = "advisor")]
+use compact_str::CompactString;
 use session::MessageRole;
+#[cfg(feature = "advisor")]
+use session::{Session, SessionMessage};
 
 use crate::agent::tools;
 use crate::extras::status_signals::StatusSignals;
@@ -99,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = cli::Cli::parse();
-    let cfg = config::load();
+    let (mut cfg, is_first_startup) = config::load();
 
     if cli.print_config {
         print_config(&cli, &cfg);
@@ -131,7 +137,11 @@ async fn main() -> anyhow::Result<()> {
         model = qm.model.clone();
     }
 
-    let mut session = session::Session::new(&provider, &model, cfg.resolve_context_window());
+    let mut session = session::Session::new(
+        &provider,
+        &model,
+        cfg.resolve_context_window(&provider, &model),
+    );
 
     // Resolve input/output token costs from quick models or defaults
     let qm_map = config::quick_models_map(&cfg);
@@ -198,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
         let task_max_turns = cfg.task_max_turns.unwrap_or(20);
         let qm = config::quick_models_map(&cfg);
 
-        // Resolve subagent model: subagent_model config > subagent_provider + model > deepseek-v4-flash quick model
+        // Resolve subagent model: subagent_model config > subagent_provider + model > main model
         let (sub_provider, mut sub_model) = if let Some(sa_model) = &cfg.subagent_model {
             if let Some(q) = qm.get(sa_model.as_str()) {
                 (q.provider.clone(), q.model.clone())
@@ -211,8 +221,6 @@ async fn main() -> anyhow::Result<()> {
             }
         } else if let Some(sa_prov) = &cfg.subagent_provider {
             (sa_prov.clone(), model.clone())
-        } else if let Some(dsv4) = qm.get("deepseek-v4-pro") {
-            (dsv4.provider.clone(), dsv4.model.clone())
         } else {
             (provider.clone(), model.clone())
         };
@@ -277,53 +285,165 @@ async fn main() -> anyhow::Result<()> {
     let status_signals: Option<StatusSignals> = None;
     let (permission, ask_tx, ask_rx) = build_permission_checker(&cli, &cfg);
 
+    #[cfg(feature = "advisor")]
+    let handoff_rx = {
+        let enabled = cli.resolve_advisor_enabled(&cfg);
+        let human_handoff = cli.resolve_advisor_human_handoff(&cfg);
+        let advisor_model_name = cli.resolve_advisor_model(&cfg);
+        let max_uses = cli.resolve_advisor_max_uses(&cfg);
+        let kilobytes_limit = cli.resolve_advisor_kilobytes_limit(&cfg);
+
+        let qm = config::quick_models_map(&cfg);
+        let (advisor_provider, advisor_model) = if let Some(q) = qm.get(advisor_model_name.as_str())
+        {
+            (q.provider.to_string(), q.model.to_string())
+        } else {
+            (provider.to_string(), advisor_model_name)
+        };
+
+        let advisor_client = if advisor_provider == provider {
+            Some(client.clone())
+        } else {
+            match crate::provider::create_client(
+                &advisor_provider,
+                cli.api_key.as_deref(),
+                &cfg.custom_providers_map(),
+                cfg.api_keys.as_ref(),
+            ) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not create advisor client for provider '{}' ({}); \
+                         advisor disabled. Set `advisor.model` and API key in config.",
+                        advisor_provider,
+                        e
+                    );
+                    None
+                }
+            }
+        };
+
+        let (handoff_tx, handoff_rx) = if human_handoff && is_interactive {
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        let config = crate::extras::advisor::AdvisorToolConfig {
+            client: advisor_client,
+            advisor_model,
+            human_handoff,
+            max_uses,
+            handoff_tx,
+            enabled,
+            kilobytes_limit,
+        };
+        crate::extras::advisor::init_config(config);
+
+        handoff_rx
+    };
     let completion_model = client.completion_model(model.to_string());
 
     // ── Interactive prompts (last thing before TUI dispatch) ──
 
     // Version-change prompts: defer to here so all heavy setup completes first.
-    if version_changed && is_interactive {
+    if version_changed && is_interactive && !is_first_startup {
         let prompts_dir = context::prompts::global_dir();
         let themes_dir = context::themes::global_dir();
-        let auto_prompts = !prompts_dir.exists();
-        let auto_themes = !themes_dir.exists();
         let mut regenerated = false;
 
-        if auto_prompts {
-            let _ = context::prompts::regen();
-            eprintln!("Prompts regenerated (first launch).");
-            regenerated = true;
-        } else {
-            let mut input = String::new();
-            eprint!("Regenerate prompts? [y/N] ");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            std::io::stdin().read_line(&mut input)?;
-            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+        // Prompts: check config override, then fall back to asking or auto-regen
+        match cfg.resolve_auto_update_prompts() {
+            Some(true) => {
                 let _ = context::prompts::regen();
                 eprintln!("Prompts regenerated.");
                 regenerated = true;
             }
+            Some(false) => { /* skip: user explicitly denied */ }
+            None => {
+                if !prompts_dir.exists() {
+                    let _ = context::prompts::regen();
+                    eprintln!("Prompts regenerated (first launch).");
+                    regenerated = true;
+                } else {
+                    let mut input = String::new();
+                    eprint!("Regenerate prompts? [y/N] ");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    std::io::stdin().read_line(&mut input)?;
+                    if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                        let _ = context::prompts::regen();
+                        eprintln!("Prompts regenerated.");
+                        regenerated = true;
+                    }
+                }
+            }
         }
 
-        if auto_themes {
-            let _ = context::themes::regen();
-            eprintln!("Themes regenerated (first launch).");
-            regenerated = true;
-        } else {
-            let mut input = String::new();
-            eprint!("Regenerate themes? [y/N] ");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            std::io::stdin().read_line(&mut input)?;
-            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+        // Themes: check config override, then fall back to asking or auto-regen
+        match cfg.resolve_auto_update_themes() {
+            Some(true) => {
                 let _ = context::themes::regen();
                 eprintln!("Themes regenerated.");
                 regenerated = true;
+            }
+            Some(false) => { /* skip: user explicitly denied */ }
+            None => {
+                if !themes_dir.exists() {
+                    let _ = context::themes::regen();
+                    eprintln!("Themes regenerated (first launch).");
+                    regenerated = true;
+                } else {
+                    let mut input = String::new();
+                    eprint!("Regenerate themes? [y/N] ");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    std::io::stdin().read_line(&mut input)?;
+                    if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                        let _ = context::themes::regen();
+                        eprintln!("Themes regenerated.");
+                        regenerated = true;
+                    }
+                }
             }
         }
 
         if regenerated {
             // Reload context to pick up freshly-regenerated prompts/themes
             context = context::load(cli.resolve_no_context_files(&cfg));
+        }
+    }
+
+    // ── Recommended MCP prompts on first startup ──
+    #[cfg(feature = "mcp")]
+    if is_first_startup && is_interactive {
+        let prompted = cfg.enable_context7_mcp.is_none() || cfg.enable_grepapp_mcp.is_none();
+        if prompted {
+            if cfg.enable_context7_mcp.is_none() {
+                let mut input = String::new();
+                eprint!("Enable Context7 MCP (documentation and code context lookup)? [y/N] ");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                std::io::stdin().read_line(&mut input)?;
+                let enable = matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
+                cfg.enable_context7_mcp = Some(enable);
+                if enable {
+                    eprintln!("Context7 MCP enabled.");
+                }
+            }
+            if cfg.enable_grepapp_mcp.is_none() {
+                let mut input = String::new();
+                eprint!("Enable Grep.app MCP (semantic code search across repositories)? [y/N] ");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                std::io::stdin().read_line(&mut input)?;
+                let enable = matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
+                cfg.enable_grepapp_mcp = Some(enable);
+                if enable {
+                    eprintln!("Grep.app MCP enabled.");
+                }
+            }
+            config::inject_mcp_defaults(&mut cfg);
+            if let Err(e) = config::save_config(&cfg) {
+                tracing::warn!("Failed to save config with MCP choices: {e}");
+            }
         }
     }
 
@@ -494,6 +614,7 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("error: empty command after '!'");
             }
         } else {
+            let temperature = config::resolve_temperature(&cli, &cfg, &model);
             let agent = provider::build_agent(
                 completion_model,
                 &cli,
@@ -503,10 +624,21 @@ async fn main() -> anyhow::Result<()> {
                 ask_tx,
                 sandbox.clone(),
                 true,
+                temperature,
                 #[cfg(feature = "mcp")]
                 None,
             )
             .await;
+            #[cfg(feature = "advisor")]
+            {
+                let mut msgs = session.messages.clone();
+                msgs.push(SessionMessage {
+                    role: MessageRole::User,
+                    content: CompactString::new(&msg),
+                    estimated_tokens: Session::estimate_tokens(&msg),
+                });
+                crate::extras::advisor::set_session_messages(msgs);
+            }
             if let Some(ss) = status_signals.as_ref() {
                 ss.send_start();
             }
@@ -531,9 +663,10 @@ async fn main() -> anyhow::Result<()> {
     } else {
         #[cfg(feature = "loop")]
         if cli.loop_mode {
-            let model = client.completion_model(model.to_string());
+            let model_completion = client.completion_model(model.to_string());
+            let temperature = config::resolve_temperature(&cli, &cfg, &model);
             let agent = provider::build_agent(
-                model,
+                model_completion,
                 &cli,
                 &cfg,
                 &context,
@@ -541,6 +674,7 @@ async fn main() -> anyhow::Result<()> {
                 ask_tx,
                 sandbox.clone(),
                 true,
+                temperature,
                 #[cfg(feature = "mcp")]
                 None,
             )
@@ -574,6 +708,8 @@ async fn main() -> anyhow::Result<()> {
             sandbox,
             arch_msg,
             status_signals,
+            #[cfg(feature = "advisor")]
+            handoff_rx,
         )
         .await?;
     }
@@ -634,10 +770,11 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
 
     let model = cli.resolve_model(cfg);
     let provider = cli.resolve_provider(cfg);
+    let qm_map = config::quick_models_map(cfg);
     let max_tokens = cli.resolve_max_tokens(cfg);
     let max_agent_turns = cli.resolve_max_agent_turns(cfg);
-    let context_window = cfg.resolve_context_window();
-    let temperature = cli.temperature.or(cfg.temperature);
+    let context_window = cfg.resolve_context_window(&provider, &model);
+    let temperature = config::resolve_temperature(cli, cfg, &model);
     let no_tools = cli.resolve_no_tools(cfg);
     let no_context_files = cli.resolve_no_context_files(cfg);
     let sandbox = cli.resolve_sandbox(cfg);
@@ -691,7 +828,10 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
         ("max-tokens", max_tokens.to_string()),
         ("max-agent-turns", max_agent_turns.to_string()),
         ("context-window", context_window.to_string()),
-        ("reserve-tokens", cfg.resolve_reserve_tokens().to_string()),
+        (
+            "reserve-tokens",
+            cfg.resolve_reserve_tokens(&model, &qm_map).to_string(),
+        ),
         ("max-read-lines", cfg.resolve_max_read_lines().to_string()),
         (
             "max-bash-output-lines",
@@ -743,6 +883,35 @@ fn print_config(cli: &cli::Cli, cfg: &config::Config) {
             ("compact", compact.to_string()),
         ],
     );
+
+    #[cfg(feature = "advisor")]
+    {
+        let advisor_enabled = cli.resolve_advisor_enabled(cfg);
+        let human_handoff = cli.resolve_advisor_human_handoff(cfg);
+        let advisor_model = cli.resolve_advisor_model(cfg);
+        let max_uses = cli
+            .resolve_advisor_max_uses(cfg)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unlimited".to_string());
+        print_section(
+            "Advisor",
+            &[
+                ("enabled", advisor_enabled.to_string()),
+                ("model", advisor_model),
+                ("human-handoff", human_handoff.to_string()),
+                ("max-uses", max_uses),
+                (
+                    "context-limit",
+                    format!(
+                        "{} KB ({} head / {} tail)",
+                        cli.resolve_advisor_kilobytes_limit(cfg),
+                        cli.resolve_advisor_kilobytes_limit(cfg) * 1024 / 2,
+                        cli.resolve_advisor_kilobytes_limit(cfg) * 1024 / 2,
+                    ),
+                ),
+            ],
+        );
+    }
 }
 
 #[cfg(feature = "loop")]
@@ -770,12 +939,12 @@ async fn run_headless_loop(
     let plan_file = cli
         .loop_plan
         .clone()
-        .unwrap_or_else(|| PathBuf::from("LOOP_PLAN.md"));
+        .unwrap_or_else(|| PathBuf::from(loop_mod::DEFAULT_PLAN_FILENAME));
     let max_iterations = cli.loop_max;
     let run_cmd = cli.loop_run.clone();
     let session_id = Uuid::new_v4().to_string();
 
-    let use_existing = loop_mod::plan::handle_startup(&plan_file)?;
+    let use_existing = loop_mod::plan::handle_startup(&plan_file).await?;
     if !use_existing {
         // No plan exists — agent will generate one on first iteration
     }
@@ -788,7 +957,7 @@ async fn run_headless_loop(
         if state.should_stop() {
             eprintln!(
                 "[loop] max iterations ({}) reached, stopping",
-                state.iteration
+                state.max_iterations.unwrap_or(0)
             );
             break;
         }
@@ -820,7 +989,10 @@ async fn run_headless_loop(
             }
         };
 
-        let summary: String = response.chars().take(300).collect();
+        let summary: String = response
+            .chars()
+            .take(loop_mod::SUMMARY_TRUNCATION_CHARS)
+            .collect();
         state.last_summary = Some(summary.clone());
 
         let validation_output = if let Some(cmd) = &state.run_cmd {

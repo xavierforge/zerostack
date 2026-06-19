@@ -1,5 +1,34 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[derive(Debug, Clone)]
+pub enum DeferredWorktreeAction {
+    Merge {
+        branch: String,
+        target: String,
+        main_path: String,
+        wt_path: String,
+    },
+    Exit {
+        main_path: String,
+    },
+}
+
+impl fmt::Display for DeferredWorktreeAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Merge { branch, target, .. } => {
+                write!(f, "deferred worktree merge: {} -> {}", branch, target)
+            }
+            Self::Exit { main_path, .. } => {
+                write!(f, "deferred worktree exit: back to {}", main_path)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DeferredWorktreeAction {}
 
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
@@ -223,22 +252,34 @@ pub fn try_merge(info: &WorktreeInfo, target: &str) -> (MergeState, MergeOutcome
 
     if let Err(e) = run_git(["fetch", "--all"]) {
         let outcome = cleanup_early(&mut working_state, format!("fetch failed: {}", e));
-        return (working_state.clone(), outcome);
+        return (working_state, outcome);
     }
 
     if let Err(e) = run_git(["checkout", target]) {
         let outcome = cleanup_early(&mut working_state, format!("checkout failed: {}", e));
-        return (working_state.clone(), outcome);
+        return (working_state, outcome);
     }
 
     if let Err(e) = run_git(["pull", "--no-edit"]) {
         let _ = run_git_quiet(["checkout", &original_branch]);
         let outcome = cleanup_early(&mut working_state, format!("pull failed: {}", e));
-        return (working_state.clone(), outcome);
+        return (working_state, outcome);
     }
 
-    match run_git(["merge", "--no-edit", &info.branch]) {
-        Ok(_) => (working_state, MergeOutcome::Success),
+    match run_git(["merge", "--squash", &info.branch]) {
+        Ok(_) => match run_git(["commit", "--no-edit"]) {
+            Ok(_) => (working_state, MergeOutcome::Success),
+            Err(e) if e.contains("nothing to commit") => (working_state, MergeOutcome::Success),
+            Err(e) => {
+                let _ = run_git_quiet(["reset", "--merge"]);
+                let _ = run_git_quiet(["checkout", &original_branch]);
+                let outcome = cleanup_early(
+                    &mut working_state,
+                    format!("commit after squash failed: {}", e),
+                );
+                (working_state, outcome)
+            }
+        },
         Err(_) if has_merge_conflict() => {
             let files = conflicted_files();
             (working_state, MergeOutcome::Conflicts(files))
@@ -485,4 +526,40 @@ fn has_uncommitted_changes() -> bool {
         Ok(out) if out.status.success() => !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
         _ => false,
     }
+}
+
+pub fn worktree_has_uncommitted(wt_path: &Path) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(wt_path)
+        .args(["status", "--porcelain"])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        _ => false,
+    }
+}
+
+pub fn worktree_auto_commit_all(wt_path: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(wt_path)
+        .args(["add", "-A"])
+        .output()
+        .map_err(|e| format!("git add failed: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git add -A failed: {}", stderr.trim()));
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(wt_path)
+        .args(["commit", "-m", "auto-commit: save changes before merge"])
+        .output()
+        .map_err(|e| format!("git commit failed: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git commit failed: {}", stderr.trim()));
+    }
+    Ok(())
 }

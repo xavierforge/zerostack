@@ -11,6 +11,12 @@ pub struct QuickModelConfig {
     pub input_token_cost: f64,
     #[serde(default)]
     pub output_token_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve_tokens: Option<u64>,
+    /// Per-model temperature override (0.0–2.0). Takes precedence over the
+    /// global `temperature` setting but is overridden by `--temperature`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,4 +80,49 @@ pub struct ColorsConfig {
     pub chat_background: Option<CompactString>,
     pub input_background: Option<CompactString>,
     pub status_background: Option<CompactString>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChainConfig {
+    #[serde(rename = "brainstorm-to-plan")]
+    pub brainstorm_to_plan: bool,
+    #[serde(rename = "plan-to-code")]
+    pub plan_to_code: bool,
+    #[serde(rename = "code-to-review")]
+    pub code_to_review: bool,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            brainstorm_to_plan: true,
+            plan_to_code: true,
+            code_to_review: false,
+        }
+    }
+}
+
+#[cfg(feature = "advisor")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvisorConfig {
+    pub enabled: bool,
+    pub model: Option<CompactString>,
+    pub max_uses: Option<usize>,
+    pub human_handoff: bool,
+    pub advisor_kilobytes_limit: u32,
+}
+
+#[cfg(feature = "advisor")]
+impl Default for AdvisorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: Some(CompactString::new("deepseek-v4-pro")),
+            max_uses: Some(3),
+            human_handoff: true,
+            advisor_kilobytes_limit: 256,
+        }
+    }
 }

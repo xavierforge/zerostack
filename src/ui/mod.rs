@@ -74,6 +74,8 @@ pub(super) const C_ERROR: Color = Color::Red;
 pub(super) const C_TOOL: Color = Color::Yellow;
 pub(super) const C_PERM: Color = Color::Magenta;
 pub(super) const C_BTW: Color = Color::Cyan;
+#[cfg(feature = "advisor")]
+pub(super) const C_HANDOFF: Color = Color::Green;
 
 #[allow(clippy::too_many_arguments)]
 fn refresh_display(
@@ -84,23 +86,31 @@ fn refresh_display(
     loop_label: Option<&str>,
     prompt_name: Option<&str>,
     perm_mode: Option<&str>,
+    chain_label: Option<&str>,
     btw_cost: f64,
     btw_in: u64,
     btw_out: u64,
 ) -> io::Result<()> {
     renderer.render_viewport()?;
-    let status = StatusLine::render(
+    let (status, chain_badge) = StatusLine::render(
         session,
         is_running,
         0,
         loop_label,
         prompt_name,
         perm_mode,
+        chain_label,
         btw_cost,
         btw_in,
         btw_out,
     );
-    renderer.draw_bottom(&input.buffer, input.cursor, &status, is_running)?;
+    renderer.draw_bottom(
+        &input.buffer,
+        input.cursor,
+        &status,
+        chain_badge.as_deref(),
+        is_running,
+    )?;
     if let Some(ref mut picker) = input.picker {
         picker.draw()?;
     }
@@ -221,6 +231,103 @@ pub(crate) fn classify_submission(is_running: bool, text: &str) -> SubmitAction 
     }
 }
 
+#[cfg(feature = "git-worktree")]
+async fn spawn_merge_agent(
+    branch: &str,
+    target: &str,
+    main_path: &str,
+    wt_path: &str,
+    force_flag: bool,
+    session: &mut Session,
+    agent: &mut Option<AnyAgent>,
+    client: &AnyClient,
+    cli: &Cli,
+    cfg: &Config,
+    context: &ContextFiles,
+    permission: &Option<PermCheck>,
+    ask_tx: &Option<AskSender>,
+    sandbox: &Sandbox,
+    reasoning_enabled: bool,
+    agent_rx: &mut Option<mpsc::Receiver<AgentEvent>>,
+    main_abort: &mut Option<tokio::task::AbortHandle>,
+    is_running: &mut bool,
+    status_signals: &Option<StatusSignals>,
+    wt_return_path: &mut Option<(String, String, String, bool)>,
+    #[cfg(feature = "mcp")] mcp_manager: &mut Option<McpClientManager>,
+) {
+    let wt_remove_flag = if force_flag { "--force" } else { "" };
+    let branch_delete_flag = if force_flag { "-D" } else { "-d" };
+    let prompt = format!(
+        "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
+         Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
+         Follow these steps:\n\
+         1. cd {main_path}\n\
+         2. git fetch --all\n\
+         3. git checkout {target}\n\
+         4. git pull --no-edit\n\
+         5. git merge --squash {branch}\n\
+         6. git commit --no-edit\n\n\
+         After step 5, CHECK THE EXIT CODE and output.\n\
+         - If the merge Succeeded (no conflicts), continue to step 6.\n\
+         - If there is a MERGE CONFLICT:\n\
+           a. Run: git diff --name-only --diff-filter=U\n\
+           b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
+           c. Ask the user what to do. Give them these options:\n\
+              - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
+              - 'resolve <file>': you help them fix the conflict in that file.\n\
+              - 'leave': leave the conflict state as-is for manual resolution.\n\
+           d. WAIT for the user's response before continuing.\n\
+           e. Follow their instruction.\n\n\
+         7. If the merge succeeded (or conflicts were resolved):\n\
+           - git worktree remove {wt_remove_flag} {wt_path}\n\
+           - git branch {branch_delete_flag} {branch}\n\n\
+         8. cd {main_path} and report completion.\n\n\
+         Important: Do NOT skip any step. Always check for conflicts after merge.",
+        branch = branch,
+        wt_path = wt_path,
+        target = target,
+        main_path = main_path,
+        wt_remove_flag = wt_remove_flag,
+        branch_delete_flag = branch_delete_flag
+    );
+    session.add_message(MessageRole::User, &prompt);
+    let history = crate::agent::runner::convert_history(session);
+    #[cfg(feature = "mcp")]
+    let mcp_ref = ensure_mcp_manager(mcp_manager, cfg).await;
+    ensure_agent(
+        agent,
+        client,
+        session,
+        cli,
+        cfg,
+        context,
+        permission,
+        ask_tx,
+        sandbox,
+        reasoning_enabled,
+        #[cfg(feature = "mcp")]
+        mcp_ref,
+    )
+    .await;
+    let runner = agent
+        .as_ref()
+        .unwrap()
+        .clone()
+        .spawn_runner(prompt, history);
+    *agent_rx = Some(runner.event_rx);
+    *main_abort = Some(runner.abort_handle);
+    *is_running = true;
+    if let Some(ss) = status_signals.as_ref() {
+        ss.send_start();
+    }
+    *wt_return_path = Some((
+        main_path.to_string(),
+        wt_path.to_string(),
+        branch.to_string(),
+        force_flag,
+    ));
+}
+
 /// Starts a single main agent run for `text` and records its abort handle.
 /// The ONLY place that sets `agent_rx`/`is_running` for user-driven runs, so the
 /// "at most one main run" invariant is enforced in one spot. Callers must ensure
@@ -285,6 +392,8 @@ async fn start_main_run(
         ss.send_start();
     }
     session.add_message(MessageRole::User, text);
+    #[cfg(feature = "advisor")]
+    crate::extras::advisor::set_session_messages(session.messages.clone());
     if !cli.no_session {
         let _ = crate::session::chat_history::append_entry(
             &crate::session::chat_history::ChatHistoryEntry {
@@ -558,6 +667,7 @@ pub async fn run_interactive(
     sandbox: Sandbox,
     auto_trigger_msg: Option<String>,
     status_signals: Option<StatusSignals>,
+    #[cfg(feature = "advisor")] mut handoff_rx: Option<crate::extras::advisor::HandoffReceiver>,
 ) -> anyhow::Result<()> {
     let _guard = TerminalGuard::new()?;
 
@@ -638,6 +748,8 @@ pub async fn run_interactive(
     // compact again. Reset at every turn boundary.
     let mut awaiting_compaction_relief = false;
     let mut dot_prompt_restore: Option<String> = None;
+    let mut chain_pending: Option<crate::extras::chain::ChainPhase> = None;
+    let mut chain_label_msg: Option<String> = None;
 
     let perm_mode = || -> Option<String> {
         permission.as_ref().map(|p| {
@@ -667,6 +779,7 @@ pub async fn run_interactive(
         None,
         context.current_prompt_name.as_deref(),
         perm_mode().as_deref(),
+        chain_label_msg.as_deref(),
         btw_total_cost,
         btw_total_in,
         btw_total_out,
@@ -693,6 +806,7 @@ pub async fn run_interactive(
                 #[cfg(feature = "mcp")]
                 let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
                 let model = client.completion_model(session.model.to_string());
+                let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
                 agent = Some(
                     crate::provider::build_agent(
                         model,
@@ -703,6 +817,7 @@ pub async fn run_interactive(
                         ask_tx.clone(),
                         sandbox.clone(),
                         reasoning_enabled,
+                        temperature,
                         #[cfg(feature = "mcp")]
                         mcp_ref,
                     )
@@ -732,6 +847,7 @@ pub async fn run_interactive(
                 #[cfg(feature = "mcp")]
                 let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
                 let model = client.completion_model(session.model.to_string());
+                let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
                 agent = Some(
                     crate::provider::build_agent(
                         model,
@@ -742,6 +858,7 @@ pub async fn run_interactive(
                         ask_tx.clone(),
                         sandbox.clone(),
                         reasoning_enabled,
+                        temperature,
                         #[cfg(feature = "mcp")]
                         mcp_ref,
                     )
@@ -792,6 +909,8 @@ pub async fn run_interactive(
             ss.send_start();
         }
         session.add_message(MessageRole::User, trigger_msg);
+        #[cfg(feature = "advisor")]
+        crate::extras::advisor::set_session_messages(session.messages.clone());
     }
 
     let (mut user_tx, mut user_rx) = mpsc::channel::<UserEvent>(64);
@@ -804,17 +923,17 @@ pub async fn run_interactive(
                 match ev {
                     UserEvent::Resize => {
                         renderer.resize();
-                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         continue;
                     }
                     UserEvent::ScrollUp => {
                         renderer.scroll_line_up();
-                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         continue;
                     }
                     UserEvent::ScrollDown => {
                         renderer.scroll_line_down();
-                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         continue;
                     }
                     UserEvent::MouseDown { row, col: _ } => {
@@ -823,7 +942,7 @@ pub async fn run_interactive(
                                 renderer.selection_active = true;
                                 renderer.selection_start = Some(idx);
                                 renderer.selection_end = Some(idx);
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             }
                         continue;
                     }
@@ -831,7 +950,7 @@ pub async fn run_interactive(
                         if renderer.selection_active
                             && let Some(idx) = renderer.buffer_line_at_row(row) {
                                 renderer.selection_end = Some(idx);
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             }
                         continue;
                     }
@@ -844,13 +963,13 @@ pub async fn run_interactive(
                                 copy_to_clipboard(&text);
                             }
                             renderer.clear_selection();
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         }
                         continue;
                     }
                     UserEvent::Paste(data) => {
                         input.handle_paste(data);
-                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                        refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         continue;
                     }
                     UserEvent::Key(key) => {
@@ -867,7 +986,7 @@ pub async fn run_interactive(
                                 }
                                 btw_inflight = 0;
                                 renderer.write_line("btw cancelled", C_ERROR)?;
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             } else if is_running {
                                 // Actually cancel the run's task (not just stop
                                 // listening), so it stops executing tools. bash
@@ -907,7 +1026,7 @@ pub async fn run_interactive(
                                     "interrupted (changes may be partial; review with git diff)",
                                     C_ERROR,
                                 )?;
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             } else {
                                 break;
                             }
@@ -920,12 +1039,12 @@ pub async fn run_interactive(
                                 renderer.write_line("copied selection", Color::Green)?;
                             }
                             renderer.clear_selection();
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
                         }
                         if renderer.selection_active && key.code == KeyCode::Esc {
                             renderer.clear_selection();
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
                         }
 
@@ -937,29 +1056,29 @@ pub async fn run_interactive(
                                 &format!("reasoning visibility: {}", if show_reasoning { "on" } else { "off" }),
                                 Color::White,
                             )?;
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
                         }
 
                         match key.code {
                             KeyCode::PageUp => {
                                 renderer.scroll_page_up();
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             KeyCode::PageDown => {
                                 renderer.scroll_page_down();
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             KeyCode::Home => {
                                 renderer.scroll_to_top();
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             KeyCode::End => {
                                 renderer.scroll_to_bottom()?;
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             _ => {}
@@ -967,7 +1086,7 @@ pub async fn run_interactive(
 
                         if input.picker.as_ref().is_some_and(|p| p.active())
                             && input.handle_picker_key(key) {
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
 
@@ -982,7 +1101,7 @@ pub async fn run_interactive(
                             user_tx = new_tx;
                             user_rx = new_rx;
                             event_handle = Some(spawn_event_thread(user_tx.clone(), running.clone()));
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
                         }
 
@@ -996,7 +1115,7 @@ pub async fn run_interactive(
                                     "warning: lazygit not found — install it (https://github.com/jesseduffield/lazygit)",
                                     C_ERROR,
                                 )?;
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             if let Some(h) = event_handle.take() {
@@ -1018,7 +1137,105 @@ pub async fn run_interactive(
                             user_tx = new_tx;
                             user_rx = new_rx;
                             event_handle = Some(spawn_event_thread(user_tx.clone(), running.clone()));
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            continue;
+                        }
+
+                        // Chain prompt active: intercept Y/N/B keystrokes
+                        if renderer.chain_prompt.is_some() && !renderer.chain_but_mode {
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    renderer.chain_prompt = None;
+                                    if let Some(phase) = chain_pending.take() {
+                                        chain_label_msg = None;
+                                        let next_name = phase.next_prompt_name();
+                                        if let Some(content) = context.prompts.get(next_name).cloned() {
+                                            let (mode_directive_str, clean_content) =
+                                                crate::permission::parse_prompt_mode(&content);
+                                            let mode_directive = mode_directive_str.map(|s| s.to_string());
+                                            context.current_prompt = Some(if mode_directive.is_some() {
+                                                clean_content.to_string()
+                                            } else {
+                                                content
+                                            });
+                                            context.current_prompt_name = Some(next_name.to_string());
+                                            if let Some(ref mode_str) = mode_directive {
+                                                if mode_str == "last_user_mode"
+                                                    && let Some(perm) = &permission
+                                                {
+                                                    let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                                    guard.restore_user_mode();
+                                                } else if let Some(mode) =
+                                                    crate::permission::SecurityMode::from_str(mode_str)
+                                                    && let Some(perm) = &permission
+                                                {
+                                                    let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                                    guard.set_prompt_mode(mode);
+                                                }
+                                            }
+                                        }
+                                        let msg = phase.transition_message().to_string();
+                                        for line in msg.lines() {
+                                            renderer.write_line(
+                                                &format!("> {}", sanitize_output(line)),
+                                                Color::Green,
+                                            )?;
+                                        }
+                                        renderer.write_line("", Color::White)?;
+                                        session.add_message(MessageRole::User, &msg);
+                                        start_main_run(
+                                            &msg, &mut agent, &client, session, cli,
+                                            cfg, context, &permission, &ask_tx, &sandbox,
+                                            reasoning_enabled, &mut agent_rx,
+                                            &mut main_abort, &mut is_running,
+                                            &status_signals,
+                                            #[cfg(feature = "mcp")] &mut mcp_manager,
+                                        ).await;
+                                    }
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    continue;
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') => {
+                                    renderer.chain_prompt = None;
+                                    chain_pending = None;
+                                    chain_label_msg = None;
+                                    renderer.write_line(
+                                        "chain declined — won't ask again this session",
+                                        C_AGENT,
+                                    )?;
+                                    if let Some(ref name) = context.current_prompt_name {
+                                        if !context.chain_declined.contains(name) {
+                                            context.chain_declined.push(name.clone());
+                                        }
+                                    }
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    continue;
+                                }
+                                KeyCode::Char('b') | KeyCode::Char('B') => {
+                                    renderer.chain_but_mode = true;
+                                    renderer.chain_prompt = None;
+                                    input.clear_buffer();
+                                    chain_label_msg = chain_pending.map(|p| p.chain_label().to_string().into());
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    continue;
+                                }
+                                _ => {
+                                    // Ignore other keystrokes while chain prompt is active
+                                    continue;
+                                }
+                            }
+                        }
+                        // Chain but mode: Esc cancels back to ask
+                        if renderer.chain_but_mode && key.code == KeyCode::Esc {
+                            renderer.chain_but_mode = false;
+                            if let Some(phase) = chain_pending {
+                                renderer.chain_prompt = Some(renderer::ChainPrompt {
+                                    question: compact_str::CompactString::from(phase.chain_label()),
+                                });
+                                chain_label_msg = Some(phase.chain_label().to_string());
+                            }
+                            input.clear_buffer();
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                             continue;
                         }
 
@@ -1026,11 +1243,76 @@ pub async fn run_interactive(
                             #[cfg(feature = "loop")]
                             if loop_state.as_ref().is_some_and(|ls| ls.active) && !text.starts_with('/') {
                                 renderer.write_line("loop active: /loop stop to cancel", C_ERROR)?;
-                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                 continue;
                             }
                             if renderer.is_scrolling() {
                                 renderer.scroll_to_bottom()?;
+                            }
+                            // Chain-of-prompts: handle text submission after B (but) mode
+                            if !is_running
+                                && let Some(phase) = chain_pending.take()
+                            {
+                                chain_label_msg = None;
+                                renderer.chain_but_mode = false;
+                                let trimmed = text.trim().to_string();
+                                if trimmed.is_empty() {
+                                    // Empty but — restore ask prompt
+                                    chain_pending = Some(phase);
+                                    chain_label_msg = Some(phase.chain_label().to_string());
+                                    renderer.chain_prompt = Some(renderer::ChainPrompt {
+                                        question: compact_str::CompactString::from(phase.chain_label()),
+                                    });
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    continue;
+                                }
+                                // Accept with extra instruction
+                                let next_name = phase.next_prompt_name();
+                                if let Some(content) = context.prompts.get(next_name).cloned() {
+                                    let (mode_directive_str, clean_content) =
+                                        crate::permission::parse_prompt_mode(&content);
+                                    let mode_directive = mode_directive_str.map(|s| s.to_string());
+                                    context.current_prompt = Some(if mode_directive.is_some() {
+                                        clean_content.to_string()
+                                    } else {
+                                        content
+                                    });
+                                    context.current_prompt_name = Some(next_name.to_string());
+                                    if let Some(ref mode_str) = mode_directive {
+                                        if mode_str == "last_user_mode"
+                                            && let Some(perm) = &permission
+                                        {
+                                            let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                            guard.restore_user_mode();
+                                        } else if let Some(mode) =
+                                            crate::permission::SecurityMode::from_str(mode_str)
+                                            && let Some(perm) = &permission
+                                        {
+                                            let mut guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+                                            guard.set_prompt_mode(mode);
+                                        }
+                                    }
+                                }
+                                let base_msg = phase.transition_message().to_string();
+                                let msg = format!("{}\n\nAdditional instructions: {}", base_msg, trimmed);
+                                for line in msg.lines() {
+                                    renderer.write_line(
+                                        &format!("> {}", sanitize_output(line)),
+                                        Color::Green,
+                                    )?;
+                                }
+                                renderer.write_line("", Color::White)?;
+                                session.add_message(MessageRole::User, &msg);
+                                start_main_run(
+                                    &msg, &mut agent, &client, session, cli,
+                                    cfg, context, &permission, &ask_tx, &sandbox,
+                                    reasoning_enabled, &mut agent_rx,
+                                    &mut main_abort, &mut is_running,
+                                    &status_signals,
+                                    #[cfg(feature = "mcp")] &mut mcp_manager,
+                                ).await;
+                                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                continue;
                             }
                             // A main run is active: never spawn a second one (that
                             // would silently orphan the running one — it would keep
@@ -1041,7 +1323,7 @@ pub async fn run_interactive(
                             match classify_submission(is_running, &text) {
                                 SubmitAction::Run => {}
                                 SubmitAction::Ignore => {
-                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                                 SubmitAction::RejectWhileRunning => {
@@ -1049,13 +1331,13 @@ pub async fn run_interactive(
                                         "agent is running — wait for it to finish or press Ctrl-C before running a command",
                                         C_ERROR,
                                     )?;
-                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                                 SubmitAction::Queue => {
                                     pending_inputs.push_back(text.to_string());
                                     renderer.write_line(&format!("queued: {}", sanitize_output(&text)), C_TOOL)?;
-                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                             }
@@ -1088,7 +1370,7 @@ pub async fn run_interactive(
                                         }
                                         _ => renderer.write_line("usage: /queue [ls|clear|pop]", C_ERROR)?,
                                     }
-                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                             }
@@ -1115,8 +1397,10 @@ pub async fn run_interactive(
                                             session, &turn_trace, is_running,
                                         );
                                         let model = client.completion_model(session.model.to_string());
+                                        let temperature =
+                                            crate::config::resolve_temperature(cli, cfg, &session.model);
                                         let btw_agent = crate::provider::build_btw_agent(
-                                            model, cli, cfg, context, &permission, &ask_tx, reasoning_enabled,
+                                            model, cli, cfg, context, &permission, &ask_tx, reasoning_enabled, temperature,
                                         );
                                         let runner = btw_agent.spawn_btw(
                                             btw_text.to_string(), snapshot, btw_tx.clone(), id,
@@ -1125,7 +1409,7 @@ pub async fn run_interactive(
                                         btw_inflight += 1;
                                         renderer.write_line(&format!("[btw #{}] thinking...", id), C_BTW)?;
                                     }
-                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                                    refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                                     continue;
                                 }
                             }
@@ -1251,97 +1535,55 @@ pub async fn run_interactive(
                                         let _ = crate::session::storage::save_session(session);
                                     }
                                     #[cfg(feature = "git-worktree")]
-                                    Err(e) if e.to_string().starts_with("DEFER_WT_MERGE\u{1F}") => {
-                                        let err_msg = e.to_string();
-                                        let parts: Vec<&str> = err_msg.strip_prefix("DEFER_WT_MERGE\u{1F}").unwrap_or("").splitn(5, '\u{1F}').collect();
-                                        if parts.len() == 5 {
-                                            let branch = parts[0];
-                                            let target = parts[1];
-                                            let main_path = parts[2].to_string();
-                                            let wt_path = parts[3];
-                                            let _repo_name = parts[4];
-                                            #[cfg(feature = "git-worktree")]
-                                            let force_flag = cli.resolve_wt_force(cfg);
-                                            #[cfg(not(feature = "git-worktree"))]
-                                            let force_flag = false;
-                                            let wt_remove_flag = if force_flag { "--force" } else { "" };
-                                            let prompt = format!(
-                                                "I'm in a git worktree on branch '{branch}' at '{wt_path}'. \
-                                                 Merge it into '{target}' in the main repo at '{main_path}'.\n\n\
-                                                 Follow these steps:\n\
-                                                 1. cd {main_path}\n\
-                                                 2. git fetch --all\n\
-                                                 3. git checkout {target}\n\
-                                                 4. git pull --no-edit\n\
-                                                 5. git merge --no-edit {branch}\n\n\
-                                                 After step 5, CHECK THE EXIT CODE and output.\n\
-                                                 - If the merge Succeeded (no conflicts), continue to step 6.\n\
-                                                 - If there is a MERGE CONFLICT:\n\
-                                                   a. Run: git diff --name-only --diff-filter=U\n\
-                                                   b. Tell the user WHICH FILES have conflicts. Show them the list.\n\
-                                                   c. Ask the user what to do. Give them these options:\n\
-                                                      - 'abort': run `git merge --abort`, do NOT push, do NOT delete anything, stop here.\n\
-                                                      - 'resolve <file>': you help them fix the conflict in that file.\n\
-                                                      - 'leave': leave the conflict state as-is for manual resolution.\n\
-                                                   d. WAIT for the user's response before continuing.\n\
-                                                   e. Follow their instruction.\n\n\
-                                                 6. If the merge succeeded (or conflicts were resolved):\n\
-                                                   - git worktree remove {wt_remove_flag} {wt_path}\n\
-                                                   - git branch -D {branch}\n\n\
-                                                 7. cd {main_path} and report completion.\n\n\
-                                                 Important: Do NOT skip any step. Always check for conflicts after merge.",
-                                                branch = branch, wt_path = wt_path, target = target, main_path = main_path,
-                                                wt_remove_flag = wt_remove_flag
-                                            );
-                                            session.add_message(MessageRole::User, &prompt);
-                                            let history = crate::agent::runner::convert_history(session);
-                                            #[cfg(feature = "mcp")]
-                                            let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
-                                            ensure_agent(
-                                                &mut agent, &client, session, cli, cfg, context,
-                                                &permission, &ask_tx, &sandbox, reasoning_enabled,
-                                                #[cfg(feature = "mcp")] mcp_ref,
-                                            ).await;
-                                            let runner = agent.as_ref().unwrap().clone().spawn_runner(prompt, history);
-                                            agent_rx = Some(runner.event_rx);
-                                            main_abort = Some(runner.abort_handle);
-                                            is_running = true;
-                                            if let Some(ss) = status_signals.as_ref() {
-                                                ss.send_start();
+                                    Err(e) if e.downcast_ref::<crate::extras::git_worktree::DeferredWorktreeAction>().is_some() => {
+                                        let action = e.downcast_ref::<crate::extras::git_worktree::DeferredWorktreeAction>().unwrap();
+                                        match action {
+                                            crate::extras::git_worktree::DeferredWorktreeAction::Merge { branch, target, main_path, wt_path } => {
+                                                #[cfg(feature = "git-worktree")]
+                                                let force_flag = cli.resolve_wt_force(cfg);
+                                                #[cfg(not(feature = "git-worktree"))]
+                                                let force_flag = false;
+                                                spawn_merge_agent(
+                                                    branch, target, main_path, wt_path,
+                                                    force_flag,
+                                                    session,
+                                                    &mut agent, &client, cli, cfg, context,
+                                                    &permission, &ask_tx, &sandbox, reasoning_enabled,
+                                                    &mut agent_rx, &mut main_abort, &mut is_running,
+                                                    &status_signals,
+                                                    &mut wt_return_path,
+                                                    #[cfg(feature = "mcp")] &mut mcp_manager,
+                                                ).await;
                                             }
-                                            wt_return_path = Some((main_path, wt_path.to_string(), branch.to_string(), force_flag));
-                                        }
-                                    }
-                                    #[cfg(feature = "git-worktree")]
-                                    Err(e) if e.to_string().starts_with("DEFER_WT_EXIT\u{1F}") => {
-                                        let err_msg = e.to_string();
-                                        let parts: Vec<&str> = err_msg.strip_prefix("DEFER_WT_EXIT\u{1F}").unwrap_or("").splitn(2, '\u{1F}').collect();
-                                        if parts.len() == 2 {
-                                            let main_path = parts[0];
-                                            std::env::set_current_dir(main_path)
-                                                .map_err(|e| anyhow::anyhow!("failed to change directory: {}", e))?;
-                                            session.working_dir = compact_str::CompactString::new(main_path);
-                                            context.reload();
-                                            apply_current_prompt_mode(context, &permission);
-                                            #[cfg(feature = "mcp")]
-                                            let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
-                                            let model = client.completion_model(session.model.to_string());
-                                            agent = Some(crate::provider::build_agent(
-                                                model,
-                                                cli,
-                                                cfg,
-                                                context,
-                                                permission.clone(),
-                                                ask_tx.clone(),
-                                                sandbox.clone(),
-                                                reasoning_enabled,
-                                                #[cfg(feature = "mcp")] mcp_ref,
-                                            ).await);
-                                            render_session(&mut renderer, session, cli, cfg, context)?;
-                                            renderer.write_line(
-                                                &format!("returned to main repo at {}", main_path),
-                                                C_AGENT,
-                                            )?;
+                                            crate::extras::git_worktree::DeferredWorktreeAction::Exit { main_path } => {
+                                                std::env::set_current_dir(main_path)
+                                                    .map_err(|e| anyhow::anyhow!("failed to change directory: {}", e))?;
+                                                session.working_dir = compact_str::CompactString::new(main_path);
+                                                context.reload();
+                                                apply_current_prompt_mode(context, &permission);
+                                                #[cfg(feature = "mcp")]
+                                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                                let model = client.completion_model(session.model.to_string());
+                                                let temperature =
+                                                    crate::config::resolve_temperature(cli, cfg, &session.model);
+                                                agent = Some(crate::provider::build_agent(
+                                                    model,
+                                                    cli,
+                                                    cfg,
+                                                    context,
+                                                    permission.clone(),
+                                                    ask_tx.clone(),
+                                                    sandbox.clone(),
+                                                    reasoning_enabled,
+                                                    temperature,
+                                                    #[cfg(feature = "mcp")] mcp_ref,
+                                                ).await);
+                                                render_session(&mut renderer, session, cli, cfg, context)?;
+                                                renderer.write_line(
+                                                    &format!("returned to main repo at {}", main_path),
+                                                    C_AGENT,
+                                                )?;
+                                            }
                                         }
                                     }
                                     Err(e) if e.to_string().starts_with("DEFER_INIT:") => {
@@ -1355,6 +1597,26 @@ pub async fn run_interactive(
                                         ).await;
                                         let history = crate::agent::runner::convert_history(session);
                                         let runner = agent.as_ref().unwrap().clone().spawn_runner(prompt, history);
+                                        agent_rx = Some(runner.event_rx);
+                                        main_abort = Some(runner.abort_handle);
+                                        is_running = true;
+                                        if let Some(ss) = status_signals.as_ref() {
+                                            ss.send_start();
+                                        }
+                                    }
+                                    Err(e) if e.to_string().starts_with("DEFER_REVIEW:") => {
+                                        let msg = e.to_string().strip_prefix("DEFER_REVIEW:").unwrap_or("").to_string();
+                                        dot_prompt_restore = context.one_shot_restore.take();
+                                        session.add_message(MessageRole::User, &msg);
+                                        #[cfg(feature = "mcp")]
+                                        let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                        ensure_agent(
+                                            &mut agent, &client, session, cli, cfg, context,
+                                            &permission, &ask_tx, &sandbox, reasoning_enabled,
+                                            #[cfg(feature = "mcp")] mcp_ref,
+                                        ).await;
+                                        let history = crate::agent::runner::convert_history(session);
+                                        let runner = agent.as_ref().unwrap().clone().spawn_runner(msg, history);
                                         agent_rx = Some(runner.event_rx);
                                         main_abort = Some(runner.abort_handle);
                                         is_running = true;
@@ -1501,12 +1763,12 @@ pub async fn run_interactive(
                                 ).await;
                             }
                             }
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         } else if is_running {
-                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                            refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
                         } else {
-                            let status = StatusLine::render(session, is_running, 0, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out);
-                            renderer.draw_bottom(&input.buffer, input.cursor, &status, is_running)?;
+                            let (status, chain_badge) = StatusLine::render(session, is_running, 0, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out);
+                            renderer.draw_bottom(&input.buffer, input.cursor, &status, chain_badge.as_deref(), is_running)?;
                             if let Some(ref mut picker) = input.picker {
                                 picker.draw()?;
                             }
@@ -1624,11 +1886,36 @@ pub async fn run_interactive(
                         guard.restore_user_mode();
                     }
                 }
+                // Chain-of-prompts: after the agent finishes, check if the
+                // current prompt is a chainable phase and trigger the prompt.
+                // Skip phases that were declined earlier in this session.
+                if !is_running
+                    && chain_pending.is_none()
+                    && let Some(ref name) = context.current_prompt_name
+                    && !context.chain_declined.contains(name)
+                    && let Some(phase) =
+                        crate::extras::chain::ChainPhase::from_prompt_name(name)
+                    && let Some(ref chain_cfg) = cfg.chain
+                    && phase.is_enabled(chain_cfg)
+                {
+                    chain_pending = Some(phase);
+                    chain_label_msg =
+                        Some(phase.chain_label().to_string());
+                    renderer.chain_but_mode = false;
+                    renderer.chain_prompt = Some(renderer::ChainPrompt {
+                        question: compact_str::CompactString::from(phase.chain_label()),
+                    });
+                }
                 // Run finished: drop its (now-dead) abort handle and, if the user
                 // queued input while it ran, replay the next one as a new run.
                 if !is_running {
                     main_abort = None;
                     if let Some(next) = pending_inputs.pop_front() {
+                        // Clear any chain prompt since we're starting a new run
+                        renderer.chain_prompt = None;
+                        renderer.chain_but_mode = false;
+                        chain_pending = None;
+                        chain_label_msg = None;
                         for line in next.lines() {
                             renderer.write_line(&format!("> {}", sanitize_output(line)), Color::Green)?;
                         }
@@ -1642,7 +1929,7 @@ pub async fn run_interactive(
                         ).await;
                     }
                 }
-                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
             }
             Some(ask_req) = async {
                 ask_rx.as_mut()?.recv().await
@@ -1651,7 +1938,7 @@ pub async fn run_interactive(
                     ask_req, &mut renderer, session, cli,
                     &mut user_rx, &mut agent_line_started, &mut was_reasoning,
                 ).await?;
-                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
             }
             Some(bev) = btw_rx.recv() => {
                 // Parallel side-question result. Rendered as a single block; it is
@@ -1678,13 +1965,40 @@ pub async fn run_interactive(
                         renderer.write_line(&format!("[btw #{}] error: {}", id, sanitize_output(&message)), C_ERROR)?;
                     }
                 }
-                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)), if is_running => {
-                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
+                refresh_display(&mut renderer, &mut input, session, is_running, loop_label.as_deref(), context.current_prompt_name.as_deref(), perm_mode().as_deref(), chain_label_msg.as_deref(), btw_total_cost, btw_total_in, btw_total_out)?;
             }
             else => {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+
+        #[cfg(feature = "advisor")]
+        if let Some(ref mut rx) = handoff_rx {
+            if let Ok(handoff_req) = rx.try_recv() {
+                handle_human_handoff(
+                    handoff_req,
+                    &mut renderer,
+                    &mut user_rx,
+                    &mut agent_line_started,
+                    &mut was_reasoning,
+                )
+                .await?;
+                refresh_display(
+                    &mut renderer,
+                    &mut input,
+                    session,
+                    is_running,
+                    loop_label.as_deref(),
+                    context.current_prompt_name.as_deref(),
+                    perm_mode().as_deref(),
+                    chain_label_msg.as_deref(),
+                    btw_total_cost,
+                    btw_total_in,
+                    btw_total_out,
+                )?;
             }
         }
     }
@@ -1703,7 +2017,64 @@ pub async fn run_interactive(
             ),
             C_AGENT,
         );
-        let (state, outcome) = crate::extras::git_worktree::try_merge(&info, &target);
+        let mut proceed = true;
+        if crate::extras::git_worktree::worktree_has_uncommitted(&info.worktree_path) {
+            let _ = renderer.write_line(
+                "worktree has uncommitted changes. [c]ommit all and continue  [a]bort merge",
+                C_PERM,
+            );
+            if let Some(ss) = status_signals.as_ref() {
+                ss.send_git_conflict();
+            }
+            let action = loop {
+                tokio::select! {
+                    Some(ev) = user_rx.recv() => {
+                        if let crate::event::UserEvent::Key(key) = ev {
+                            match key.code {
+                                KeyCode::Char('c') | KeyCode::Char('C') => break 'c',
+                                KeyCode::Char('a') | KeyCode::Char('A') => break 'a',
+                                KeyCode::Enter | KeyCode::Esc => break 'a',
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            };
+            match action {
+                'c' => {
+                    if let Err(e) =
+                        crate::extras::git_worktree::worktree_auto_commit_all(&info.worktree_path)
+                    {
+                        let _ = renderer.write_line(&format!("auto-commit failed: {}", e), C_ERROR);
+                        proceed = false;
+                    } else {
+                        let _ = renderer.write_line(
+                            "committed all worktree changes, proceeding with merge",
+                            C_AGENT,
+                        );
+                    }
+                }
+                'a' => {
+                    let _ = renderer.write_line("merge aborted, worktree left untouched", C_AGENT);
+                    proceed = false;
+                }
+                _ => unreachable!(),
+            }
+        }
+        let (state, outcome) = if proceed {
+            crate::extras::git_worktree::try_merge(&info, &target)
+        } else {
+            // Skip merge; outcome is unused, construct a dummy state.
+            (
+                crate::extras::git_worktree::MergeState {
+                    info: info.clone(),
+                    original_branch: String::new(),
+                    orig_dir: std::path::PathBuf::new(),
+                    stashed: false,
+                },
+                crate::extras::git_worktree::MergeOutcome::Error("aborted by user".into()),
+            )
+        };
         match outcome {
             crate::extras::git_worktree::MergeOutcome::Success => {
                 let merge_result = if cli.resolve_wt_force(cfg) {
@@ -1734,16 +2105,23 @@ pub async fn run_interactive(
                 for f in &files {
                     let _ = renderer.write_line(&format!("  {}", f), C_ERROR);
                 }
-                let _ = renderer
-                    .write_line("Keep conflict state for manual resolution? [y/N] ", C_PERM);
+                if let Some(ss) = status_signals.as_ref() {
+                    ss.send_git_conflict();
+                }
+                let _ = renderer.write_line(
+                    "[a]bort  [l]eave for manual resolution  [h]elp (agent resolves)",
+                    C_PERM,
+                );
 
-                let abort = loop {
+                let action = loop {
                     tokio::select! {
                         Some(ev) = user_rx.recv() => {
                             if let crate::event::UserEvent::Key(key) = ev {
                                 match key.code {
-                                    KeyCode::Char('y') | KeyCode::Char('Y') => break false,
-                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => break true,
+                                    KeyCode::Char('a') | KeyCode::Char('A') => break 'a',
+                                    KeyCode::Char('l') | KeyCode::Char('L') => break 'l',
+                                    KeyCode::Char('h') | KeyCode::Char('H') => break 'h',
+                                    KeyCode::Enter | KeyCode::Esc => break 'a',
                                     _ => {}
                                 }
                             }
@@ -1751,17 +2129,139 @@ pub async fn run_interactive(
                     }
                 };
 
-                if abort {
-                    let _ = crate::extras::git_worktree::cancel_merge(&state);
-                    let _ = renderer.write_line("merge aborted, restored original state", C_AGENT);
-                } else {
-                    let _ = renderer.write_line(
-                        &format!(
-                            "conflict state left in {} for manual resolution",
-                            info.main_repo_path.display()
-                        ),
-                        C_AGENT,
-                    );
+                match action {
+                    'a' => {
+                        let _ = crate::extras::git_worktree::cancel_merge(&state);
+                        crate::extras::git_worktree::cleanup_worktree(
+                            &info.worktree_path.to_string_lossy(),
+                            &info.branch,
+                            &info.main_repo_path.to_string_lossy(),
+                            cli.resolve_wt_force(cfg),
+                        );
+                        let _ =
+                            renderer.write_line("merge aborted, restored original state", C_AGENT);
+                    }
+                    'l' => {
+                        let _ = renderer.write_line(
+                            &format!(
+                                "conflict state left in {} for manual resolution",
+                                info.main_repo_path.display()
+                            ),
+                            C_AGENT,
+                        );
+                    }
+                    'h' => {
+                        let _ = crate::extras::git_worktree::cancel_merge(&state);
+                        let _ = renderer.write_line("agent resolving merge...", C_AGENT);
+                        let main_path = info.main_repo_path.display().to_string();
+                        let wt_path = info.worktree_path.display().to_string();
+                        let force_flag = cli.resolve_wt_force(cfg);
+                        spawn_merge_agent(
+                            &info.branch,
+                            &target,
+                            &main_path,
+                            &wt_path,
+                            force_flag,
+                            session,
+                            &mut agent,
+                            &client,
+                            cli,
+                            cfg,
+                            context,
+                            &permission,
+                            &ask_tx,
+                            &sandbox,
+                            reasoning_enabled,
+                            &mut agent_rx,
+                            &mut main_abort,
+                            &mut is_running,
+                            &status_signals,
+                            &mut wt_return_path,
+                            #[cfg(feature = "mcp")]
+                            &mut mcp_manager,
+                        )
+                        .await;
+
+                        let mut agent_line_started = false;
+                        let mut merge_response_buf = String::new();
+                        let mut merge_response_start_line = None;
+                        let mut merge_was_reasoning = false;
+                        while is_running {
+                            let ev = match agent_rx.as_mut() {
+                                Some(rx) => {
+                                    tokio::select! {
+                                        Some(e) = rx.recv() => Some(e),
+                                        Some(ev) = user_rx.recv() => {
+                                            if let crate::event::UserEvent::Key(key) = ev {
+                                                let is_ctrl_c = key.code == KeyCode::Char('c')
+                                                    && key.modifiers.contains(KeyModifiers::CONTROL);
+                                                if is_ctrl_c {
+                                                    if let Some(h) = main_abort.take() {
+                                                        h.abort();
+                                                    }
+                                                    is_running = false;
+                                                    if let Some(ss) = status_signals.as_ref() {
+                                                        ss.send_stop();
+                                                    }
+                                                    agent_rx = None;
+                                                }
+                                            }
+                                            None
+                                        }
+                                        Some(ask_req) = async {
+                                            if let Some(rx) = ask_rx.as_mut() {
+                                                rx.recv().await
+                                            } else {
+                                                std::future::pending().await
+                                            }
+                                        } => {
+                                            let _ = handle_permission_request(
+                                                ask_req, &mut renderer, session, cli,
+                                                &mut user_rx, &mut agent_line_started,
+                                                &mut merge_was_reasoning,
+                                            ).await;
+                                            None
+                                        }
+                                    }
+                                }
+                                None => break,
+                            };
+                            if let Some(ev) = ev {
+                                #[cfg(feature = "mcp")]
+                                let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
+                                handle_agent_event(
+                                    ev,
+                                    &mut renderer,
+                                    session,
+                                    cfg,
+                                    cli,
+                                    context,
+                                    &mut is_running,
+                                    &mut agent_rx,
+                                    &mut agent_line_started,
+                                    &mut merge_response_buf,
+                                    &mut merge_response_start_line,
+                                    &mut merge_was_reasoning,
+                                    show_reasoning,
+                                    &mut agent,
+                                    &mut client,
+                                    &mut loop_label,
+                                    &permission,
+                                    &ask_tx,
+                                    &sandbox,
+                                    &status_signals,
+                                    #[cfg(feature = "loop")]
+                                    &mut loop_state,
+                                    #[cfg(feature = "git-worktree")]
+                                    &mut wt_return_path,
+                                    #[cfg(feature = "mcp")]
+                                    mcp_ref,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             crate::extras::git_worktree::MergeOutcome::Error(e) => {
@@ -1780,5 +2280,63 @@ pub async fn run_interactive(
         mgr.shutdown().await;
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "advisor")]
+async fn handle_human_handoff(
+    req: crate::extras::advisor::HandoffRequest,
+    renderer: &mut Renderer,
+    user_rx: &mut mpsc::Receiver<UserEvent>,
+    agent_line_started: &mut bool,
+    was_reasoning: &mut bool,
+) -> anyhow::Result<()> {
+    *was_reasoning = false;
+    if *agent_line_started {
+        renderer.write_line("", Color::White)?;
+        *agent_line_started = false;
+    }
+
+    renderer.write_line("[handoff] Model requests your guidance:", C_HANDOFF)?;
+    for line in req.question.lines() {
+        renderer.write_line(&format!("  | {}", sanitize_output(line)), C_HANDOFF)?;
+    }
+    renderer.write_line("", C_HANDOFF)?;
+    renderer.write_line(
+        "  Type your response and press Enter (ESC to cancel):",
+        C_HANDOFF,
+    )?;
+
+    let mut buffer = String::new();
+    let response = loop {
+        tokio::select! {
+            Some(ev) = user_rx.recv() => {
+                if let crate::event::UserEvent::Key(key) = ev {
+                    match key.code {
+                        crossterm::event::KeyCode::Enter => break buffer,
+                        crossterm::event::KeyCode::Esc => break String::new(),
+                        crossterm::event::KeyCode::Char(c) => {
+                            buffer.push(c);
+                            renderer.write_line(&format!("  > {}", buffer), C_HANDOFF)?;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            buffer.pop();
+                            renderer.write_line(&format!("  > {}", buffer), C_HANDOFF)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+
+    if response.is_empty() {
+        renderer.write_line("  [cancelled]", C_HANDOFF)?;
+    } else {
+        renderer.write_line(&format!("  [sent: {}]", response), C_HANDOFF)?;
+    }
+    renderer.write_line("", Color::White)?;
+
+    let _ = req.reply.send(response);
     Ok(())
 }

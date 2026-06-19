@@ -189,7 +189,7 @@ impl FilePicker {
         }
 
         if self.matches.is_empty() {
-            let r = rows.saturating_sub(3);
+            let r = rows.saturating_sub(4);
             stdout.execute(MoveTo(0, r))?;
             write!(
                 stdout,

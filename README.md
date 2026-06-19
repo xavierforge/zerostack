@@ -9,7 +9,7 @@ Minimal coding agent written in Rust, inspired by [pi](https://pi.dev/docs/lates
 
 <a href="https://www.producthunt.com/products/zerostack-coding-agent/reviews/new?utm_source=badge-product_review&utm_medium=badge&utm_source=badge-zerostack&#0045;coding&#0045;agent" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/product_review.svg?product_id=1236867&theme=light" alt="Zerostack&#0032;Coding&#0032;Agent - A&#0032;minimal&#0032;coding&#0032;agent&#0044;&#0032;with&#0032;a&#0032;bundle&#0032;of&#0032;innovative&#0032;features | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
 
-*note:* Want to support? Consider [donating here](https://ko-fi.com/gidellav); if you are a company interested in sponsoring zerostack, [contact me here](mailto:giuseppe.dellavedova8+sponsor@gmail.com)
+*note:* Want to support? Consider [donating here](https://ko-fi.com/gidellav); if you are a company interested in sponsoring zerostack, [contact me here](mailto:giuseppe.dellavedova8+sponsor@gmail.com). If you want to support without paying, check out [multistack](https://github.com/gi-dellav/multistack).
 
 ## Features
 
@@ -41,7 +41,16 @@ _zerostack_ is one of the smallest and most performant coding agents on the mark
 
 ## Installation
 
-### Basic installation (recommended)
+### Homebrew (recommended)
+
+```bash
+brew tap gi-dellav/tap
+brew trust gi-dellav/tap   # required for Homebrew 6.0.0+
+brew install zerostack
+# brew install multistack   # Run this to also install multistack (parallel agent manager)
+```
+
+### Script
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gi-dellav/zerostack/main/install.sh | bash
@@ -75,6 +84,8 @@ cargo install zerostack --features acp,memory,multithread
 Once installed, run `/prompt autoconfig` inside zerostack to explore the documentation and configure the tool interactively.
 
 _note:_ If you have questions or you want to collaborate on the project, please join the [dedicated Matrix chatroom](https://app.element.io/#/room/#zerostack-general:matrix.org).
+
+If you want to orchestrate multiple zerostack agents from the terminal, also install [multistack](https://github.com/gi-dellav/multistack).
 
 ### Optional: sandbox mode
 
@@ -313,6 +324,30 @@ The worktrees integrations offers 3 slash commands:
 2. **Work** — Use zerostack normally; changes stay on the feature branch.
 3. **Merge** — `/wt-merge` tells the agent to merge the branch, push, clean up, and return to the main repo.
 4. **Exit** — `/wt-exit` immediately returns to the main repo without merging.
+
+### Auto-merge on exit
+
+When you quit zerostack while in a worktree, the `--wt-auto-merge` flag
+(or `--parallel`, which implies it) causes zerostack to attempt merging the
+worktree branch before exiting.
+
+- **Clean merge**: completes silently (merge, push, remove worktree, delete branch).
+- **Merge conflicts**: zerostack lists conflicting files and prompts:
+  ```
+  [a]bort  [l]eave for manual resolution  [h]elp (agent resolves)
+  ```
+  - `a` – abort the merge, restore clean state, do not delete the worktree.
+  - `l` – leave the conflict state in the main repo for manual `git mergetool`.
+  - `h` – abort the merge, then spawn the agent to redo the merge with
+    interactive conflict-resolution guidance (same as `/wt-merge`).
+
+| Flag | Description |
+|------|-------------|
+| `--worktree <name>` | Create a worktree on branch `<name>` and `cd` into it. |
+| `--wt-auto-merge`   | Auto-merge worktree branch on exit. |
+| `--parallel`        | Create a timestamped worktree with auto-merge on exit. |
+| `--wt-force`        | Force worktree remove and branch delete (`-D`) even if dirty. |
+| `--wt-base-dir <dir>` | Base directory for worktrees (default: parent of repo). |
 
 ## ACP (Agent Communication Protocol) support
 

@@ -54,7 +54,7 @@ async fn handle_loop(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<(
             write_error(ctx.renderer, "usage: /loop <prompt>");
             return Ok(());
         }
-        let plan_file = std::path::PathBuf::from("LOOP_PLAN.md");
+        let plan_file = std::path::PathBuf::from(crate::extras::r#loop::DEFAULT_PLAN_FILENAME);
         let ls = crate::extras::r#loop::LoopState::new(prompt, plan_file, None, None);
         *ctx.loop_state = Some(ls);
         write_ok(
@@ -140,8 +140,8 @@ async fn handle_wt_merge(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resu
         }
     };
     let repo_name = crate::extras::git_worktree::repo_name(&info.main_repo_path);
-    let main_path = info.main_repo_path.display();
-    let wt_path = info.worktree_path.display();
+    let main_path = info.main_repo_path.display().to_string();
+    let wt_path = info.worktree_path.display().to_string();
     write_ok(
         ctx.renderer,
         format!(
@@ -149,13 +149,13 @@ async fn handle_wt_merge(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resu
             info.branch, target, repo_name
         ),
     );
-    Err(anyhow::anyhow!(
-        "DEFER_WT_MERGE\x1F{}\x1F{}\x1F{}\x1F{}\x1F{}",
-        info.branch,
-        target,
-        main_path,
-        wt_path,
-        repo_name
+    Err(anyhow::Error::new(
+        crate::extras::git_worktree::DeferredWorktreeAction::Merge {
+            branch: info.branch,
+            target,
+            main_path,
+            wt_path,
+        },
     ))
 }
 
@@ -173,15 +173,13 @@ async fn handle_wt_exit(_parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resu
             return Ok(());
         }
     };
-    let main_path = info.main_repo_path.display();
+    let main_path = info.main_repo_path.display().to_string();
     write_ok(
         ctx.renderer,
         format!("returning to main repo at {}", main_path),
     );
-    Err(anyhow::anyhow!(
-        "DEFER_WT_EXIT\x1F{}\x1F{}",
-        main_path,
-        info.worktree_path.display()
+    Err(anyhow::Error::new(
+        crate::extras::git_worktree::DeferredWorktreeAction::Exit { main_path },
     ))
 }
 

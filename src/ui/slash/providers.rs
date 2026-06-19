@@ -100,6 +100,7 @@ pub(crate) async fn warm_model_cache(
 async fn apply_model(ctx: &mut SlashCtx<'_>, model_id: &str) {
     let new_model = compact_str::CompactString::new(model_id);
     let model = ctx.client.completion_model(new_model.to_string());
+    let temperature = crate::config::resolve_temperature(ctx.cli, ctx.cfg, &new_model);
     *ctx.agent = Some(
         crate::provider::build_agent(
             model,
@@ -110,12 +111,17 @@ async fn apply_model(ctx: &mut SlashCtx<'_>, model_id: &str) {
             ctx.ask_tx.clone(),
             ctx.sandbox.clone(),
             *ctx.reasoning_enabled,
+            temperature,
             #[cfg(feature = "mcp")]
             ctx.mcp_manager,
         )
         .await,
     );
     ctx.session.model = new_model.clone();
+    ctx.session.update_context_window(
+        ctx.cfg
+            .resolve_context_window(&ctx.session.provider, &new_model),
+    );
     write_ok(ctx.renderer, format!("switched to model: {}", new_model));
 }
 
@@ -151,6 +157,10 @@ async fn handle_provider(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resu
     ctx.rebuild_agent_with_client(new_provider, *ctx.reasoning_enabled)
         .await?;
     ctx.session.provider = compact_str::CompactString::new(new_provider);
+    ctx.session.update_context_window(
+        ctx.cfg
+            .resolve_context_window(new_provider, &ctx.session.model),
+    );
     write_ok(
         ctx.renderer,
         format!(
@@ -171,6 +181,7 @@ async fn handle_model(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<
     }
     let new_model = compact_str::CompactString::new(parts[1].trim());
     let model = ctx.client.completion_model(new_model.to_string());
+    let temperature = crate::config::resolve_temperature(ctx.cli, ctx.cfg, &new_model);
     *ctx.agent = Some(
         crate::provider::build_agent(
             model,
@@ -181,6 +192,7 @@ async fn handle_model(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<
             ctx.ask_tx.clone(),
             ctx.sandbox.clone(),
             *ctx.reasoning_enabled,
+            temperature,
             #[cfg(feature = "mcp")]
             ctx.mcp_manager,
         )
@@ -188,6 +200,10 @@ async fn handle_model(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<
     );
     ctx.session.model = new_model.clone();
     ctx.session.provider = ctx.cli.resolve_provider(ctx.cfg);
+    ctx.session.update_context_window(
+        ctx.cfg
+            .resolve_context_window(&ctx.session.provider, &new_model),
+    );
     write_ok(ctx.renderer, format!("switched to model: {}", new_model));
     Ok(())
 }
@@ -230,7 +246,7 @@ async fn handle_models(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result
             if refresh {
                 // Explicit refresh: just confirm with a count overview — the picker
                 // already holds the full list, so don't dump it to the scrollback.
-                // Dim (DarkGrey), matching the "loaded AGENTS.md" startup notices.
+                // Dim (DarkGrey), matching the "[system] loaded AGENTS.md" startup notices.
                 write_result(
                     ctx.renderer,
                     format!(

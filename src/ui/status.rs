@@ -18,24 +18,32 @@ impl StatusLine {
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         session: &Session,
-        is_running: bool,
+        _is_running: bool,
         _spinner_tick: u64,
         loop_label: Option<&str>,
         prompt_name: Option<&str>,
         perm_mode: Option<&str>,
+        chain_label: Option<&str>,
         btw_cost: f64,
         btw_in: u64,
         btw_out: u64,
-    ) -> String {
-        let state = if is_running { "running" } else { "ready" };
+    ) -> (String, Option<String>) {
+        let state = if let Some(name) = prompt_name {
+            format!("prompt:{}", name)
+        } else {
+            String::new()
+        };
         let dir = Path::new(&session.working_dir)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&session.working_dir);
 
         let ctx = session.context_window;
-        let used = session.total_estimated_tokens;
-        let pct = if ctx > 0 { (used * 100) / ctx } else { 0 };
+        let pct = if ctx > 0 {
+            (session.effective_context_tokens() * 100) / ctx
+        } else {
+            0
+        };
 
         let cost_str = if session.total_cost > 0.0 {
             format!(" ${:.4}", session.total_cost)
@@ -63,7 +71,7 @@ impl StatusLine {
 
         let token_detail = if session.total_input_tokens > 0 || session.total_output_tokens > 0 {
             format!(
-                " i:{} o:{}",
+                " \u{21D1}{} \u{21D3}{}",
                 fmt_tokens(session.total_input_tokens),
                 fmt_tokens(session.total_output_tokens),
             )
@@ -82,32 +90,30 @@ impl StatusLine {
             None => String::new(),
         };
 
-        let prompt_badge = match prompt_name {
-            Some(name) => format!(" [{}]", name),
-            None => String::new(),
-        };
-
         let perm_badge = match perm_mode {
             Some(m) if m != "standard" => format!(" | mode:{}", m),
             _ => String::new(),
         };
 
-        format!(
-            "{}{}{} | {}{} | {}/{} ({}%) | {}msgs{}{} | {}{}{}",
+        let chain_badge = match chain_label {
+            Some(label) => Some(format!(" | {}", label)),
+            None => None,
+        };
+
+        let status = format!(
+            "{}{}{} | {}{} | {}%/{}{}{} | {}{}",
             dir,
             cost_str,
             btw_badge,
             session.model,
             loop_badge,
-            fmt_tokens(used),
-            fmt_tokens(ctx),
             pct,
-            session.messages.len(),
+            fmt_tokens(ctx),
             token_detail,
             compact_badge,
             state,
-            prompt_badge,
             perm_badge,
-        )
+        );
+        (status, chain_badge)
     }
 }

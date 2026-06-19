@@ -5,6 +5,7 @@ mod help;
 pub(crate) mod init;
 mod memory;
 mod providers;
+pub(crate) mod review;
 mod session;
 mod settings;
 
@@ -53,6 +54,13 @@ pub struct SlashCtx<'a> {
 impl SlashCtx<'_> {
     pub async fn rebuild_agent(&mut self) {
         let model = self.client.completion_model(self.session.model.to_string());
+        let temperature =
+            crate::config::resolve_temperature(self.cli, self.cfg, &self.session.model);
+        #[cfg(feature = "advisor")]
+        {
+            crate::extras::advisor::update_client(self.client.clone());
+            crate::extras::advisor::set_session_messages(self.session.messages.clone());
+        }
         *self.agent = Some(
             crate::provider::build_agent(
                 model,
@@ -63,6 +71,7 @@ impl SlashCtx<'_> {
                 self.ask_tx.clone(),
                 self.sandbox.clone(),
                 *self.reasoning_enabled,
+                temperature,
                 #[cfg(feature = "mcp")]
                 self.mcp_manager,
             )
@@ -82,6 +91,13 @@ impl SlashCtx<'_> {
             self.cfg.api_keys.as_ref(),
         )?;
         let model = self.client.completion_model(self.session.model.to_string());
+        let temperature =
+            crate::config::resolve_temperature(self.cli, self.cfg, &self.session.model);
+        #[cfg(feature = "advisor")]
+        {
+            crate::extras::advisor::update_client(self.client.clone());
+            crate::extras::advisor::set_session_messages(self.session.messages.clone());
+        }
         *self.agent = Some(
             crate::provider::build_agent(
                 model,
@@ -92,6 +108,7 @@ impl SlashCtx<'_> {
                 self.ask_tx.clone(),
                 self.sandbox.clone(),
                 new_reasoning,
+                temperature,
                 #[cfg(feature = "mcp")]
                 self.mcp_manager,
             )
@@ -156,24 +173,17 @@ pub async fn handle_compress(
     renderer.write_line("compressing...", C_AGENT)?;
     renderer.write_line("", crossterm::style::Color::White)?;
 
-    let reserve = cfg.resolve_reserve_tokens();
+    let qm = crate::config::quick_models_map(cfg);
+    let reserve = cfg.resolve_reserve_tokens(&session.model, &qm);
     let keep_recent = cfg.resolve_keep_recent_tokens();
     let max_tokens = session.context_window.saturating_sub(reserve);
 
-    if session.total_estimated_tokens <= max_tokens {
+    if session.effective_context_tokens() <= max_tokens {
         renderer.write_line("context within limits, no compression needed", C_AGENT)?;
         return Ok(());
     }
 
-    let mut accumulated = 0u64;
-    let mut cut_idx = session.messages.len();
-    for (i, msg) in session.messages.iter().enumerate().rev() {
-        if accumulated >= keep_recent {
-            cut_idx = i + 1;
-            break;
-        }
-        accumulated = accumulated.saturating_add(msg.estimated_tokens);
-    }
+    let cut_idx = crate::session::Session::select_compaction_cut(&session.messages, keep_recent);
 
     if cut_idx == 0 {
         renderer.write_line("nothing to compress (entire context is recent)", C_AGENT)?;
@@ -206,6 +216,7 @@ pub async fn handle_compress(
     session.compress(summary, cut_idx, tokens_before);
 
     let model = client.completion_model(session.model.to_string());
+    let temperature = crate::config::resolve_temperature(cli, cfg, &session.model);
     *agent = Some(
         crate::provider::build_agent(
             model,
@@ -216,6 +227,7 @@ pub async fn handle_compress(
             ask_tx.clone(),
             sandbox.clone(),
             reasoning_enabled,
+            temperature,
             #[cfg(feature = "mcp")]
             mcp_manager,
         )
@@ -285,7 +297,7 @@ pub async fn handle_slash(
         "/prompt" | "/theme" | "/regen-prompts" | "/regen-themes" => {
             content::handle(&parts, &mut ctx).await
         }
-        "/reasoning" | "/thinking" | "/mode" | "/toggle" | "/mcp" | "/editsys" => {
+        "/reasoning" | "/thinking" | "/mode" | "/toggle" | "/mcp" | "/editsys" | "/advisor" => {
             settings::handle(&parts, &mut ctx).await
         }
         "/sessions" | "/clear" | "/new" | "/undo" | "/retry" | "/quit" | "/exit" | "/history" => {
@@ -301,6 +313,7 @@ pub async fn handle_slash(
         }
         "/add" | "/drop" | "/drop-all" => add::handle(&parts, &mut ctx).await,
         "/init" => init::handle(&parts, &mut ctx).await,
+        "/review" => review::handle(&parts, &mut ctx).await,
         "/memory" => memory::handle(&parts, &mut ctx).await,
         "/compress" | "/compact" | "/loop" | "/worktree" | "/wt-merge" | "/wt-exit" => {
             features::handle(&parts, &mut ctx).await

@@ -34,7 +34,7 @@ Example (JSON):
   "max_tokens": 16384,
   "temperature": 0.7,
   "context_window": 128000,
-  "reserve_tokens": 16384,
+  "reserve_tokens": 8192,
   "keep_recent_tokens": 10000,
   "compact_enabled": true,
   "mid_turn_compact_threshold": 0.80,
@@ -98,7 +98,7 @@ model = "deepseek/deepseek-v4-flash"
 max_tokens = 16384
 temperature = 0.7
 context_window = 128000
-reserve_tokens = 16384
+reserve_tokens = 8192
 keep_recent_tokens = 10000
 compact_enabled = true
 mid_turn_compact_threshold = 0.80
@@ -147,14 +147,16 @@ Accepted top-level keys:
 | `temperature`             | number  | Model temperature value. Only configurable via the `--temperature` CLI flag (`0.0` to `2.0`). Config-file value is parsed but not currently applied.                        |
 | `no_tools`                | boolean | Disable all tools. Default: `false`.                                                                                                                                        |
 | `no_context_files`        | boolean | Disable loading global/project `AGENTS.md`, `CLAUDE.md`, and `ARCHITECTURE.md` (if `archmd` feature enabled) context files. Default: `false`.                               |
-| `context_window`          | integer | Session context-window size used for status and auto-compaction. Default: `128000`.                                                                                         |
-| `reserve_tokens`          | integer | Tokens to reserve before compaction is triggered. Default: `16384`.                                                                                                         |
+| `context_window`          | integer | Session context-window size used for status and auto-compaction. When unset, auto-detected from the selected model's catalog entry; falls back to `128000` if the model is not in the catalog. A value of `0` disables auto-compaction. |
+| `reserve_tokens`          | integer | Tokens to reserve before compaction is triggered. When unset globally, falls back to the active quick model's `reserve_tokens` field, then to the hardcoded default of `8192`.                                                                                                         |
 | `keep_recent_tokens`      | integer | Approximate recent-token budget kept verbatim during compaction. Default: `10000`.                                                                                          |
 | `max_text_file_size`      | integer | Maximum allowed file size in bytes for read/write tool operations. Default: `1048576` (1 MB).                                                                               |
 | `deny_repeated_reads`     | boolean | Block repeated reads of the same file section within a session until the file is edited or written. Default: `true`. Set to `false` to allow re-reading.                     |
 | `compact_enabled`         | boolean | Master switch for all automatic conversation compaction (both between-turn and mid-turn). Default: `true`. When `false`, nothing is ever compacted automatically.            |
 | `mid_turn_compact_threshold` | number | Opt-in mid-turn compaction. Fraction of the context window (`0.0`–`1.0`) of real provider prompt pressure at which to compact *during* a turn, not just between turns. Unset by default, meaning no mid-turn compaction. Honored only when `compact_enabled` is `true`. Recommended starting value: `0.80`. See Mid-turn compaction below.            |
 | `always_show_welcome`     | boolean | Always show the welcome banner on startup, bypassing the one-shot marker file. Default: `false`.                                                                               |
+| `auto-update-prompts`     | boolean | When `true`, always regenerate prompts on version change without asking. When `false`, never regenerate. When unset, asks interactively.                                         |
+| `auto-update-themes`      | boolean | When `true`, always regenerate themes on version change without asking. When `false`, never regenerate. When unset, asks interactively.                                         |
 | `edit_system`             | string  | Edit system mode: `"similarity"` (SEARCH/REPLACE with fuzzy matching, default) or `"hashedit"` (CRC-32 tag-based CAS edits). See Edit System Modes below.                     |
 | `custom_providers`        | object  | Map of provider aliases to `{ "provider_type", "base_url", "api_key_env", "api_style", "headers", "danger_accept_invalid_certs", "timeout_secs" }`. `provider_type` must resolve to a built-in provider type; `api_key_env` is optional. For OpenAI providers, `api_style` selects `"responses"` or `"completions"`, `headers` sets custom HTTP headers (values support `${ENV_VAR}` expansion), and `timeout_secs` overrides the HTTP timeout. `danger_accept_invalid_certs` disables TLS verification. See the OpenAI API styles section below. |
 | `permission`              | object  | Permission rules using glob patterns; see the permission config notes below.                                |
@@ -172,9 +174,12 @@ Accepted top-level keys:
 | `default_prompt`          | string  | Prompt name to activate on startup. Default: `code`. If the prompt file has a `%%mode=<mode>` first-line directive, the security mode is set automatically (see Prompt directives below). |
 | `editor`                  | string  | Editor command for `Ctrl+G` (default: `$EDITOR` env var, then `editor`, then `nano`).                                                                                        |
 | `api_keys`                | object  | Map of provider names to API keys (e.g. `"openai": "sk-..."`). Used as fallback when the corresponding env var is not set.                                                   |
-| `quick_models`            | object  | Map of quick-model names to `{ "provider", "model" }`. Can be switched with `/models <name>` or `--quick-model=<name>`.                                                      |
-| `mcp_servers`             | object  | MCP server map when compiled with the `mcp` feature. When omitted, defaults to a single Exa Web Search server; see below.                                                   |
-| `allow_all_mcp_calls`     | boolean | When `true`, permission checks are skipped for all MCP tool calls. Default: `false`.                                                                                        |
+| `quick_models`            | object  | Map of quick-model names to `{ "provider", "model", "reserve_tokens"?, "input_token_cost"?, "output_token_cost"? }`. Can be switched with `/models <name>` or `--quick-model=<name>`.                                                      |
+| `mcp_servers`             | object  | MCP server map when compiled with the `mcp` feature. When omitted, recommended MCPs are auto-configured (see below).                                                   |
+| `enable-exa-mcp`          | boolean | Auto-configure the Exa Web Search MCP server. Default: `true`.                                                                                                         |
+| `enable-context7-mcp`     | boolean | Auto-configure the Context7 MCP server. Default: `false`.                                                                                                              |
+| `enable-grepapp-mcp`      | boolean | Auto-configure the Grep.app MCP server. Default: `false`.                                                                                                              |
+| `allow_all_mcp_calls`     | boolean | When `true`, permission checks are skipped for all MCP tool calls. Default: `false`.                                                                                   |
 | `acp_servers`             | object  | ACP server config map when compiled with the `acp` feature. See the ACP section below.                                                                                       |
 | `acp_host`                | string  | TCP bind host for ACP server mode (equivalent to `--acp-host`).                                                                                                              |
 | `acp_port`                | integer | TCP bind port for ACP server mode (equivalent to `--acp-port`, default: 7243).                                                                                               |
@@ -362,10 +367,20 @@ servers:
 }
 ```
 
-If `mcp_servers` is omitted (`null`) and the `mcp` feature is enabled, zerostack
-adds a default Exa Web Search MCP server at `https://mcp.exa.ai/mcp` with the
-`x-api-key` header set to `EXA_API_KEY` when that environment variable is set.
-Set `"mcp_servers": {}` to disable all MCP servers.
+### Recommended MCP servers
+
+When `mcp_servers` is not explicitly set, three recommended MCP servers are
+available. Each can be toggled with a boolean config key (all default to the
+listed API key environment variable when that variable is set):
+
+| Key                    | Default | Description                                     | Env var              |
+| ---------------------- | ------- | ----------------------------------------------- | -------------------- |
+| `enable-exa-mcp`       | `true`  | Exa web search (mcp.exa.ai)                     | `EXA_API_KEY`        |
+| `enable-context7-mcp`  | `false` | Context7 documentation lookup (mcp.context7.com) | `CONTEXT7_API_KEY`   |
+| `enable-grepapp-mcp`   | `false` | Grep.app semantic code search (mcp.grep.app)     | `GREP_APP_API_KEY`   |
+
+Set `enable-exa-mcp = false` to disable the Exa default without touching
+`mcp_servers`. Set `"mcp_servers": {}` to disable all MCP auto-configuration.
 
 ## ACP (Agent Communication Protocol) configuration
 
@@ -509,3 +524,114 @@ Write well-tested code. Follow project conventions.
 The mode change is applied when the prompt is activated and persists
 until changed again by `/mode`, another prompt directive, or a restart.
 The status bar shows `| mode:<name>` when the mode is not `standard`.
+
+## Chain-of-Prompts
+
+When enabled, after the agent finishes responding with a `brainstorm`, `plan`,
+or `code` prompt, the status bar shows `Continue to <next>? [Yes/But/No]`.
+The user's next input is interpreted as a chain decision:
+
+- **Yes** (`y`/`yes`) — switch to the next prompt and auto-submit a transition message.
+- **But** (`but <msg>` / `b <msg>` / `yes but <msg>`) — same as yes, but prepend
+  `<msg>` as an additional instruction to the transition message.
+- **No** (`n`/`no`) — decline the chain, continue normally.
+
+Typing anything that doesn't match these patterns clears the chain and
+processes the input as a normal message.
+
+### Phases
+
+| Transition | Default | Description |
+|-----------|---------|-------------|
+| `brainstorm-to-plan` | `true` | After brainstorming, prompt to move to planning |
+| `plan-to-code` | `true` | After planning, prompt to start coding |
+| `code-to-review` | `false` | After coding, prompt to run a review |
+
+### TOML
+
+```toml
+[chain]
+brainstorm-to-plan = true
+plan-to-code = true
+code-to-review = false
+```
+
+### JSON
+
+```json
+{
+  "chain": {
+    "brainstorm-to-plan": true,
+    "plan-to-code": true,
+    "code-to-review": false
+  }
+}
+```
+
+## Advisor
+
+The advisor tool lets the agent consult a stronger reviewer model (or the
+user, in human-handoff mode) for strategic guidance before making important
+decisions. This follows the [advisor strategy](https://claude.com/blog/the-advisor-strategy):
+a cheaper "executor" model drives the task and escalates to a more capable
+model only when needed.
+
+### TOML
+
+```toml
+[advisor]
+enabled = true
+model = "deepseek/deepseek-v4-pro"
+# provider = "openrouter"         # defaults to main provider
+# max_uses = 3                    # max advisor calls per request (nil = unlimited)
+# human_handoff = false           # route advisor calls to the user instead
+# advisor_kilobytes_limit = 256   # max KB of conversation context (split half head / half tail)
+```
+
+### JSON
+
+```json
+{
+  "advisor": {
+    "enabled": true,
+    "model": "deepseek/deepseek-v4-pro",
+    "max_uses": 3,
+    "human_handoff": false,
+    "advisor_kilobytes_limit": 256
+  }
+}
+```
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--advisor` | Enable the advisor tool |
+| `--advisor-model <name>` | Advisor model name |
+| `--advisor-provider <name>` | Provider for the advisor model |
+| `--advisor-max-uses <n>` | Max advisor calls per request |
+| `--advisor-human-handoff` | Route advisor calls to the user |
+| `--advisor-kilobytes-limit <n>` | Max KB of conversation context sent to advisor (default: 256) |
+
+### Human handoff mode
+
+When `human_handoff = true`, the agent's advisor calls are redirected to the
+user instead of a second model. The agent pauses, shows its question, and the
+user types a response. This is useful for:
+
+- Reviewing the agent's approach before it writes code
+- Stepping in when the agent is stuck or uncertain
+- Teaching the agent your preferences interactively
+
+### Runtime control
+
+The `/advisor` slash command provides runtime control:
+
+```
+/advisor                    Show current advisor status
+/advisor on|off             Enable or disable the advisor
+/advisor handoff [on|off]   Toggle human handoff mode
+/advisor model <name>       Change the advisor model
+/advisor max-uses <n>       Set max advisor calls per request (0 = unlimited)
+/advisor context-limit <n>  Set max kilobytes of conversation context
+```
