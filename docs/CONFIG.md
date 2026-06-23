@@ -145,6 +145,7 @@ Accepted top-level keys:
 | `max_tokens`              | integer | Maximum response tokens. Default: `16384`.                                                                                                                                  |
 | `max_agent_turns`         | integer | Maximum agent turns per response. Default: `200`.                                                                                                                           |
 | `temperature`             | number  | Model temperature value. Only configurable via the `--temperature` CLI flag (`0.0` to `2.0`). Config-file value is parsed but not currently applied.                        |
+| `extra_body`              | object  | Provider-specific JSON shallow-merged into every completion request body as a global default (e.g. OpenRouter `plugins` routing presets). A matching `quick_models` entry's `extra_body` overrides this. See Provider-specific request body parameters below. |
 | `no_tools`                | boolean | Disable all tools. Default: `false`.                                                                                                                                        |
 | `no_context_files`        | boolean | Disable loading global/project `AGENTS.md`, `CLAUDE.md`, and `ARCHITECTURE.md` (if `archmd` feature enabled) context files. Default: `false`.                               |
 | `context_window`          | integer | Session context-window size used for status and auto-compaction. When unset, auto-detected from the selected model's catalog entry; falls back to `128000` if the model is not in the catalog. A value of `0` disables auto-compaction. |
@@ -174,7 +175,7 @@ Accepted top-level keys:
 | `default_prompt`          | string  | Prompt name to activate on startup. Default: `code`. If the prompt file has a `%%mode=<mode>` first-line directive, the security mode is set automatically (see Prompt directives below). |
 | `editor`                  | string  | Editor command for `Ctrl+G` (default: `$EDITOR` env var, then `editor`, then `nano`).                                                                                        |
 | `api_keys`                | object  | Map of provider names to API keys (e.g. `"openai": "sk-..."`). Used as fallback when the corresponding env var is not set.                                                   |
-| `quick_models`            | object  | Map of quick-model names to `{ "provider", "model", "reserve_tokens"?, "input_token_cost"?, "output_token_cost"? }`. Can be switched with `/models <name>` or `--quick-model=<name>`.                                                      |
+| `quick_models`            | object  | Map of quick-model names to `{ "provider", "model", "reserve_tokens"?, "input_token_cost"?, "output_token_cost"?, "temperature"?, "extra_body"? }`. Can be switched with `/models <name>` or `--quick-model=<name>`. See Provider-specific request body parameters below for `extra_body`. |
 | `mcp_servers`             | object  | MCP server map when compiled with the `mcp` feature. When omitted, recommended MCPs are auto-configured (see below).                                                   |
 | `enable-exa-mcp`          | boolean | Auto-configure the Exa Web Search MCP server. Default: `true`.                                                                                                         |
 | `enable-context7-mcp`     | boolean | Auto-configure the Context7 MCP server. Default: `false`.                                                                                                              |
@@ -257,6 +258,65 @@ The optional `timeout_secs` field overrides the default HTTP timeout for the
 provider. TLS certificate verification can be disabled with
 `"danger_accept_invalid_certs": true` (for self-signed or internal-CA
 gateways) — use with care, as it makes the connection vulnerable to MITM.
+
+## Provider-specific request body parameters
+
+`headers` only touches HTTP headers. Some providers also accept parameters in
+the JSON request *body* — for example OpenRouter's `plugins` presets that select
+a routing strategy:
+
+```json
+{
+  "model": "openrouter/fusion",
+  "plugins": { "preset": "general-budget" }
+}
+```
+
+`extra_body` injects arbitrary JSON into the completion request body. It is
+shallow-merged (top-level keys win on collision) and works for **every**
+provider — OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and any custom
+provider — not just OpenRouter. The same value is applied to the main agent and
+the isolated `/btw` agent so they behave identically.
+
+It can be set at two levels, resolved most-specific first:
+
+1. **Per `quick_models` entry** — applies only when that model is active.
+2. **Global top-level `extra_body`** — applies to every model, including the
+   base `model`, unless a matching `quick_models` entry overrides it.
+
+```toml
+# Global default — applies to the base model and any model without its own value.
+model = "openrouter/fusion"
+provider = "openrouter"
+extra_body = { plugins = { preset = "general-budget" } }
+
+# A quick-model entry overrides the global value for that model.
+[quick_models.quality]
+provider = "openrouter"
+model = "openrouter/fusion"
+extra_body = { plugins = { preset = "quality" } }
+```
+
+In JSON:
+
+```json
+{
+  "extra_body": { "plugins": { "preset": "general-budget" } },
+  "quick_models": {
+    "quality": {
+      "provider": "openrouter",
+      "model": "openrouter/fusion",
+      "extra_body": { "plugins": { "preset": "quality" } }
+    }
+  }
+}
+```
+
+Note that body parameters are **provider-specific**: a key one provider
+understands may be ignored or rejected by another. Unlike `temperature`, a
+global `extra_body` does not follow model switches, so prefer setting it per
+`quick_models` entry — bundled with the matching `provider`/`model` — when the
+parameter is tied to a specific provider.
 
 ## Colors
 
