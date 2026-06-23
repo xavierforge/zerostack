@@ -1,62 +1,47 @@
 use crate::config::Config;
-use crate::config::types::QuickModelConfig;
-use serde_json::json;
+use crate::config::types::CustomProviderConfig;
+use compact_str::CompactString;
 use std::collections::HashMap;
 
-fn qm(model: &str, extra_body: Option<serde_json::Value>) -> QuickModelConfig {
-    QuickModelConfig {
-        provider: "openrouter".into(),
-        model: model.into(),
-        input_token_cost: 0.0,
-        output_token_cost: 0.0,
-        reserve_tokens: None,
-        temperature: None,
-        extra_body,
+fn custom_provider(provider_type: &str) -> CustomProviderConfig {
+    CustomProviderConfig {
+        provider_type: CompactString::new(provider_type),
+        base_url: "https://gateway.example.com".to_string(),
+        api_key_env: None,
+        danger_accept_invalid_certs: None,
+        api_style: None,
+        headers: HashMap::new(),
+        timeout_secs: None,
+        model: None,
     }
 }
 
 #[test]
-fn extra_body_unset_by_default() {
+fn is_anthropic_native_builtin_providers() {
     let cfg = Config::default();
-    assert_eq!(cfg.resolve_extra_body("any/model", &HashMap::new()), None);
+    assert!(cfg.is_anthropic_native("anthropic"));
+    assert!(cfg.is_anthropic_native("Anthropic")); // case-insensitive
+    for p in ["openai", "gemini", "google", "openrouter", "ollama"] {
+        assert!(!cfg.is_anthropic_native(p), "{p} is not anthropic-native");
+    }
 }
 
 #[test]
-fn extra_body_global_applies_to_base_model() {
+fn is_anthropic_native_resolves_custom_provider_type() {
+    // A custom gateway named anything but routing through the Anthropic-native
+    // protocol must be treated as anthropic-native (so cache fields are added),
+    // while an OpenAI-style gateway must not.
+    let mut providers = HashMap::new();
+    providers.insert("my-claude-proxy".to_string(), custom_provider("anthropic"));
+    providers.insert("my-oai-gateway".to_string(), custom_provider("openai"));
     let cfg = Config {
-        extra_body: Some(json!({ "plugins": { "preset": "general-budget" } })),
+        custom_providers: Some(providers),
         ..Config::default()
     };
-    assert_eq!(
-        cfg.resolve_extra_body("openrouter/fusion", &HashMap::new()),
-        Some(json!({ "plugins": { "preset": "general-budget" } }))
-    );
-}
-
-#[test]
-fn extra_body_quick_model_overrides_global() {
-    let cfg = Config {
-        extra_body: Some(json!({ "plugins": { "preset": "general-budget" } })),
-        ..Config::default()
-    };
-    let mut map = HashMap::new();
-    map.insert(
-        "quality".to_string(),
-        qm(
-            "openrouter/fusion",
-            Some(json!({ "plugins": { "preset": "quality" } })),
-        ),
-    );
-    // Matching quick-model entry wins over the global default.
-    assert_eq!(
-        cfg.resolve_extra_body("openrouter/fusion", &map),
-        Some(json!({ "plugins": { "preset": "quality" } }))
-    );
-    // A different model falls back to the global default.
-    assert_eq!(
-        cfg.resolve_extra_body("other/model", &map),
-        Some(json!({ "plugins": { "preset": "general-budget" } }))
-    );
+    assert!(cfg.is_anthropic_native("my-claude-proxy"));
+    assert!(!cfg.is_anthropic_native("my-oai-gateway"));
+    // Unknown name with no custom entry falls back to the literal kind.
+    assert!(!cfg.is_anthropic_native("totally-unknown"));
 }
 
 #[test]
