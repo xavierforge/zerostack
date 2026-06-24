@@ -326,10 +326,11 @@ async fn handle_editsys(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Resul
     Ok(())
 }
 
-/// Prefix understood by the caller in `ui::mod` to reconnect a single MCP
-/// server (and rebuild the agent) after a successful interactive OAuth login.
+/// Prefix understood by the caller in `ui::mod` to start the interactive OAuth
+/// login for a server. The login (browser wait) runs there as a background task
+/// so the TUI stays responsive; on success the server is reconnected.
 #[cfg(feature = "mcp")]
-pub(crate) const DEFER_MCP_RECONNECT: &str = "DEFER_MCP_RECONNECT:";
+pub(crate) const DEFER_MCP_LOGIN: &str = "DEFER_MCP_LOGIN:";
 
 #[cfg(feature = "mcp")]
 async fn handle_mcp(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
@@ -428,52 +429,14 @@ async fn handle_mcp_login(name: Option<&str>, ctx: &mut SlashCtx<'_>) -> anyhow:
         write_error(ctx.renderer, "usage: /mcp login <server>");
         return Ok(());
     };
-    let (url, settings) = match resolve_oauth_server(ctx, name) {
-        Ok(v) => v,
-        Err(e) => {
-            write_error(ctx.renderer, e);
-            return Ok(());
-        }
-    };
-
-    write_ok(
-        ctx.renderer,
-        format!("starting OAuth login for '{name}'..."),
-    );
-    let login = match crate::extras::mcp::oauth::begin_login(name, &url, &settings).await {
-        Ok(l) => l,
-        Err(e) => {
-            write_error(ctx.renderer, format!("login setup failed: {e}"));
-            return Ok(());
-        }
-    };
-
-    write_ok(ctx.renderer, "open this URL in your browser to authorize:");
-    write_result(ctx.renderer, &login.auth_url);
-    write_ok(
-        ctx.renderer,
-        format!(
-            "waiting for the redirect on 127.0.0.1:{} (up to 3 min)...",
-            settings.redirect_port()
-        ),
-    );
-    // Force a draw so the URL is visible before we block on the callback.
-    ctx.renderer.render_viewport()?;
-
-    match login
-        .wait_for_callback(std::time::Duration::from_secs(180))
-        .await
-    {
-        Ok(()) => {
-            write_ok(ctx.renderer, format!("authorized '{name}', connecting..."));
-            // Hand control back to the event loop to reconnect with the new token.
-            Err(anyhow::anyhow!("{}{}", DEFER_MCP_RECONNECT, name))
-        }
-        Err(e) => {
-            write_error(ctx.renderer, format!("login failed: {e}"));
-            Ok(())
-        }
+    // Validate config here so errors get friendly messages. The actual login
+    // (network discovery + browser wait) runs in the event loop, which spawns
+    // the wait as a background task so the TUI never freezes.
+    if let Err(e) = resolve_oauth_server(ctx, name) {
+        write_error(ctx.renderer, e);
+        return Ok(());
     }
+    Err(anyhow::anyhow!("{}{}", DEFER_MCP_LOGIN, name))
 }
 
 #[cfg(feature = "mcp")]
