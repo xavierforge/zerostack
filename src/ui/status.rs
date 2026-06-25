@@ -46,8 +46,18 @@ impl StatusLine {
         let ctx = session.context_window;
         let used = session.effective_context_tokens();
         let pct = (used * 100).checked_div(ctx).unwrap_or(0);
-        // Current context size and the model's max, e.g. "ctx 12k/1.0M 1%".
-        let ctx_detail = format!(" ctx {}/{} {}%", fmt_tokens(used), fmt_tokens(ctx), pct);
+        // Before the first provider response the figure is a local estimate
+        // (preamble overhead + per-message guesses); prefix it with `~` so the
+        // snap to the real count on the first reply reads as a refinement.
+        let ctx_mark = if session.ctx_is_estimated() { "~" } else { "" };
+        // Current context size and the model's max, e.g. "ctx ~12k/1.0M 1%".
+        let ctx_detail = format!(
+            " ctx {}{}/{} {}%",
+            ctx_mark,
+            fmt_tokens(used),
+            fmt_tokens(ctx),
+            pct
+        );
 
         let cost_str = if session.total_cost > 0.0 || session.show_cost_always {
             format!(" ${:.4}", session.total_cost)

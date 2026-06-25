@@ -242,6 +242,14 @@ impl Session {
         self.calibrated_msg_count = 0;
     }
 
+    /// True while the context figure is still an estimate — no provider usage
+    /// has been reported yet (or it was reset by `/clear`). The status bar marks
+    /// the estimated value so the snap to the real number on the first response
+    /// reads as a refinement rather than a surprise.
+    pub fn ctx_is_estimated(&self) -> bool {
+        self.calibrated_tokens == 0
+    }
+
     pub fn effective_context_tokens(&self) -> u64 {
         if self.calibrated_tokens == 0 {
             // No real usage yet: per-message estimates cover only `messages`, so
