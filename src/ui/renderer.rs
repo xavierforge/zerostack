@@ -44,6 +44,9 @@ pub struct Renderer {
     pub selection_start: Option<usize>,
     pub selection_end: Option<usize>,
     prev_input_height: usize,
+    /// Left padding (columns) for the chat buffer area only. Input and status
+    /// rows are unaffected.
+    chat_margin: u16,
     pub permission_prompt: Option<PermissionPrompt>,
     pub chain_prompt: Option<ChainPrompt>,
     pub chain_but_mode: bool,
@@ -68,6 +71,7 @@ impl Renderer {
             selection_start: None,
             selection_end: None,
             prev_input_height: 0,
+            chat_margin: 0,
             permission_prompt: None,
             chain_prompt: None,
             chain_but_mode: false,
@@ -76,6 +80,37 @@ impl Renderer {
 
     pub fn set_monochrome(&mut self, monochrome: bool) {
         self.monochrome = monochrome;
+    }
+
+    /// Set the chat buffer's left padding in columns. Clamped so content keeps
+    /// at least a few usable columns.
+    pub fn set_chat_margin(&mut self, margin: u16) {
+        let (cols, _) = self.terminal_size();
+        self.chat_margin = margin.min(cols.saturating_sub(8));
+    }
+
+    /// Emit the chat left-margin gutter (spaces in the chat background) at the
+    /// current cursor position. Caller has already positioned to column 0 and
+    /// set the background.
+    fn write_chat_margin(&self, stdout: &mut impl Write) -> io::Result<()> {
+        if self.chat_margin > 0 {
+            write!(stdout, "{}", " ".repeat(self.chat_margin as usize))?;
+        }
+        Ok(())
+    }
+
+    /// Position the cursor at the chat content column on row `r`, accounting for
+    /// the left margin. At the start of a line it first paints the margin gutter.
+    fn move_to_content(&self, stdout: &mut impl Write, r: u16) -> io::Result<()> {
+        if self.chat_margin > 0 && self.col == 0 {
+            stdout.execute(MoveTo(0, r))?;
+            if let Some(bg) = self.chat_bg {
+                write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
+            }
+            self.write_chat_margin(stdout)?;
+        }
+        stdout.execute(MoveTo(self.col + self.chat_margin, r))?;
+        Ok(())
     }
 
     pub fn set_background_colors(
@@ -99,7 +134,7 @@ impl Renderer {
 
     fn max_line_width(&self) -> usize {
         let (cols, _) = self.terminal_size();
-        cols.saturating_sub(1) as usize
+        cols.saturating_sub(1 + self.chat_margin) as usize
     }
 
     pub fn line_width(&self) -> usize {
@@ -132,7 +167,7 @@ impl Renderer {
 
     pub fn buffer_line_at_row(&self, row: u16) -> Option<usize> {
         let (cols, _rows) = self.terminal_size();
-        let max_width = cols.saturating_sub(1) as usize;
+        let max_width = cols.saturating_sub(1 + self.chat_margin) as usize;
         let visible = self.visible_lines();
         let total = self.buffer.len();
         if total == 0 {
@@ -278,7 +313,7 @@ impl Renderer {
 
     pub fn render_viewport(&mut self) -> io::Result<()> {
         let (cols, _rows) = self.terminal_size();
-        let max_width = cols.saturating_sub(1) as usize;
+        let max_width = cols.saturating_sub(1 + self.chat_margin) as usize;
         let visible = self.visible_lines();
         let total = self.buffer.len();
         let mut stdout = io::stdout();
@@ -339,6 +374,7 @@ impl Renderer {
                 if let Some(bg) = self.chat_bg {
                     write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                 }
+                self.write_chat_margin(&mut stdout)?;
                 if is_selected {
                     write!(stdout, "{}", SetAttribute(Attribute::Reverse))?;
                 }
@@ -448,6 +484,7 @@ impl Renderer {
                         write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                     }
                     write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+                    self.write_chat_margin(&mut stdout)?;
                     write!(stdout, "{}", SetForegroundColor(self.color(color)))?;
                     writeln!(stdout, "{}", chunk)?;
                     write!(stdout, "{}", ResetColor)?;
@@ -491,7 +528,7 @@ impl Renderer {
                     self.ensure_room();
                     let mut stdout = io::stdout();
                     let r = self.content_row();
-                    stdout.execute(MoveTo(self.col, r))?;
+                    self.move_to_content(&mut stdout, r)?;
                     if let Some(bg) = self.chat_bg {
                         write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                     }
@@ -550,7 +587,7 @@ impl Renderer {
                         self.ensure_room();
                         let mut stdout = io::stdout();
                         let r = self.content_row();
-                        stdout.execute(MoveTo(self.col, r))?;
+                        self.move_to_content(&mut stdout, r)?;
                         if let Some(bg) = self.chat_bg {
                             write!(stdout, "{}", SetBackgroundColor(self.color(bg)))?;
                         }
