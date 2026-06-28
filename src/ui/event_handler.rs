@@ -442,9 +442,9 @@ async fn handle_agent_done(
         && session.needs_compaction(reserve)
         && !cli.no_session
     {
-        renderer.write_line("auto-compacting...", Color::DarkGrey)?;
         let compress_result = handle_compress(
             None,
+            true,
             agent,
             client,
             renderer,

@@ -548,6 +548,7 @@ async fn mid_turn_compact_and_respawn(
     let mcp_ref = ensure_mcp_manager(mcp_manager, cfg).await;
     let compress_result = handle_compress(
         None,
+        true,
         agent,
         client,
         renderer,
@@ -1722,6 +1723,7 @@ pub async fn run_interactive(
                                         let mcp_ref = ensure_mcp_manager(&mut mcp_manager, cfg).await;
                                         let compress_result = handle_compress(
                                             instructions.as_deref(),
+                                            false,
                                             &mut agent, &mut client, &mut renderer, session, cli, cfg, context,
                                             reasoning_enabled,
                                             &permission, &ask_tx, &sandbox,
