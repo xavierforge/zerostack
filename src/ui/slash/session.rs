@@ -8,6 +8,7 @@ pub async fn handle(parts: &[&str], ctx: &mut SlashCtx<'_>) -> anyhow::Result<()
         "/sessions" => handle_sessions(parts, ctx).await,
         "/clear" | "/new" => handle_clear(ctx).await,
         "/undo" => handle_undo(ctx).await,
+        "/redo" => handle_redo(ctx).await,
         "/retry" => handle_retry(ctx).await,
         "/quit" | "/exit" => handle_quit(ctx).await,
         "/history" => handle_history(ctx).await,
@@ -174,6 +175,16 @@ async fn handle_undo(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn handle_redo(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
+    if !ctx.session.redo() {
+        write_ok(ctx.renderer, "nothing to redo");
+        return Ok(());
+    }
+    render_session(ctx.renderer, ctx.session, ctx.cli, ctx.cfg, ctx.context)?;
+    write_ok(ctx.renderer, "restored the last rewind");
     Ok(())
 }
 

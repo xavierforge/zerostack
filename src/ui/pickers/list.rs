@@ -28,6 +28,7 @@ const BASE_COMMANDS: &[&str] = &[
     "/queue",
     "/quit",
     "/reasoning",
+    "/redo",
     "/regen-prompts",
     "/regen-themes",
     "/retry",
