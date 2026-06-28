@@ -301,6 +301,61 @@ fn reasoning_shows_only_when_enabled() {
     );
 }
 
+fn first_fg(spans: &[StatusSpan]) -> Option<crossterm::style::Color> {
+    spans.iter().find_map(|s| match s {
+        StatusSpan::Text { fg, .. } => Some(*fg),
+        StatusSpan::Flex => None,
+    })?
+}
+
+#[test]
+fn context_percentage_is_not_clamped() {
+    // Past the window is a real over-budget state, so it must be reported
+    // honestly rather than capped at 100%.
+    let spec = StatusLineConfig {
+        lines: vec![StatusLineLine {
+            segments: vec![seg("context_percentage")],
+        }],
+    };
+    let mut session = Session::new("openrouter", "m", 1000);
+    session.set_calibration(1100, 0); // 110% of the window
+    assert_eq!(
+        line_text(&statusline::build_lines(&spec, &session, &ctx())[0]),
+        "110%"
+    );
+}
+
+#[test]
+fn context_percentage_color_warns_as_it_fills() {
+    use crossterm::style::Color;
+    let spec = StatusLineConfig {
+        lines: vec![StatusLineLine {
+            segments: vec![seg("context_percentage")],
+        }],
+    };
+    // Green tier keeps the configured (here: default/none) color.
+    let mut session = Session::new("openrouter", "m", 1000);
+    session.set_calibration(500, 0); // 50%
+    assert_eq!(
+        first_fg(&statusline::build_lines(&spec, &session, &ctx())[0]),
+        None
+    );
+
+    // Amber as it approaches full.
+    session.set_calibration(950, 0); // 95%
+    assert_eq!(
+        first_fg(&statusline::build_lines(&spec, &session, &ctx())[0]),
+        Some(Color::Yellow)
+    );
+
+    // Red once it crosses the window.
+    session.set_calibration(1100, 0); // 110%
+    assert_eq!(
+        first_fg(&statusline::build_lines(&spec, &session, &ctx())[0]),
+        Some(Color::Red)
+    );
+}
+
 #[test]
 fn session_age_is_short_duration() {
     let spec = StatusLineConfig {

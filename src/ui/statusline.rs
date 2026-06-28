@@ -122,7 +122,12 @@ fn build_line(line: &StatusLineLine, session: &Session, ctx: &StatusContext) -> 
                     if let Some(glyph) = resolve_icon(seg.icon.as_ref(), item) {
                         text = format!("{glyph} {text}");
                     }
-                    let fg = color(&seg.color);
+                    // A live-state override (e.g. the context meter turning
+                    // amber/red as it fills) wins over the configured color so
+                    // a reading at or past 100% reads as a deliberate warning
+                    // rather than a rendering glitch. The powerline cap below
+                    // derives from this fg, so the segment edge tracks it too.
+                    let fg = dynamic_item_color(item, session).or_else(|| color(&seg.color));
                     let bg = color(&seg.bg);
                     // Powerline caps: the glyph is drawn in the segment's bg color
                     // (so it reads as the segment's rounded/triangle edge) over the
@@ -171,6 +176,31 @@ fn build_line(line: &StatusLineLine, session: &Session, ctx: &StatusContext) -> 
         cleaned.pop();
     }
     cleaned.into_iter().map(|(s, _)| s).collect()
+}
+
+/// Context fill as an integer percentage of the window, or `None` when the
+/// window is unknown (so the meter shows `0%` rather than dividing by zero).
+/// Deliberately not clamped: a value past 100% is a real "over budget" state
+/// (estimated new messages stacked on the calibrated anchor, or a window
+/// configured smaller than the provider's), and hiding it would mask that
+/// compaction is overdue or could not recover.
+fn context_percentage(session: &Session) -> Option<u64> {
+    (session.effective_context_tokens() * 100).checked_div(session.context_window)
+}
+
+/// Per-item color override driven by live session state, taking precedence over
+/// the configured color. Currently only the context percentage: amber as it
+/// approaches full, red once it crosses the window, so an over-budget reading is
+/// visibly intentional. Returns `None` to keep the segment's configured color.
+fn dynamic_item_color(item: &str, session: &Session) -> Option<Color> {
+    if item != "context_percentage" {
+        return None;
+    }
+    match context_percentage(session)? {
+        pct if pct > 100 => Some(Color::Red),
+        pct if pct >= 90 => Some(Color::Yellow),
+        _ => None,
+    }
 }
 
 /// Resolve a non-separator item to display text, or `None` to skip it.
@@ -227,12 +257,7 @@ fn resolve_item(
             ))
         }
         "context_max" => Some(fmt_tokens(session.context_window)),
-        "context_percentage" => {
-            let pct = (session.effective_context_tokens() * 100)
-                .checked_div(session.context_window)
-                .unwrap_or(0);
-            Some(format!("{pct}%"))
-        }
+        "context_percentage" => Some(format!("{}%", context_percentage(session).unwrap_or(0))),
         "cost" => (session.total_cost > 0.0 || session.show_cost_always || always)
             .then(|| format!("${:.4}", session.total_cost)),
         "prompt" => ctx.prompt_name.map(|s| format!("prompt:{s}")),
